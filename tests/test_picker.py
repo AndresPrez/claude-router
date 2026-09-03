@@ -46,13 +46,9 @@ def run_picker(monkeypatch, sample_models, keys):
     monkeypatch.setattr(
         picker,
         "_draw",
-        lambda _screen,
-        _models,
-        query,
-        cursor,
-        _selected,
-        search_mode,
-        _catalog=None: states.append((query, cursor, search_mode)),
+        lambda _screen, _models, query, cursor, _selected, search_mode, _catalog=None: (
+            states.append((query, cursor, search_mode))
+        ),
     )
     result = picker._curses_picker(sample_models, [])
     return result, states

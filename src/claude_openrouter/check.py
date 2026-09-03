@@ -63,10 +63,7 @@ def estimate_probe_cost(
         return None
     if not prompt.is_finite() or not completion.is_finite() or prompt < 0 or completion < 0:
         return None
-    return (
-        prompt * input_tokens
-        + completion * output_tokens
-    )
+    return prompt * input_tokens + completion * output_tokens
 
 
 def _stream_events(output: str) -> list[dict[str, Any]]:
@@ -115,8 +112,7 @@ def parse_probe_result(
 
     debug_called = re.search(r"tool_dispatch_start\s+tool=Glob\b", debug_log) is not None
     debug_completed = (
-        re.search(r"tool_dispatch_end\s+tool=Glob\b[^\n]*\boutcome=ok\b", debug_log)
-        is not None
+        re.search(r"tool_dispatch_end\s+tool=Glob\b[^\n]*\boutcome=ok\b", debug_log) is not None
     )
     tool_called = bool(tool_ids) or debug_called
     tool_completed = bool(tool_ids & completed_ids) or debug_completed

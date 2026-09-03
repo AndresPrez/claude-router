@@ -44,6 +44,10 @@ def anthropic_credential_path() -> Path:
     return config_dir() / "anthropic-credential"
 
 
+def zai_credential_path() -> Path:
+    return config_dir() / "zai-credential"
+
+
 def router_token_path() -> Path:
     return config_dir() / "router-token"
 

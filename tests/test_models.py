@@ -3,11 +3,17 @@ from __future__ import annotations
 import pytest
 
 from claude_openrouter.models import (
+    ZAI_MODEL_IDS,
+    ZAI_MODELS,
     catalog_input_modalities,
     compact_row,
     exact_models,
     input_modalities,
+    namespaced_model,
+    original_model,
     picker_row,
+    provider_of,
+    route_of_namespaced,
     search_models,
     supported_parameters,
     supports_parameter,
@@ -77,9 +83,7 @@ def test_tool_capabilities_are_explicit_and_unknown_is_not_assumed(sample_models
     qwen = sample_models[3]
     unknown = sample_models[0]
 
-    assert supported_parameters(gemini) == frozenset(
-        {"tools", "tool_choice", "max_tokens"}
-    )
+    assert supported_parameters(gemini) == frozenset({"tools", "tool_choice", "max_tokens"})
     assert supports_parameter(gemini, "TOOLS") is True
     assert supports_tools(gemini) is True
     assert tool_capability_badge(gemini, detailed=True) == "tools ✓ · tool choice ✓"
@@ -116,3 +120,54 @@ def test_catalog_input_modalities_uses_exact_ids_and_skips_unknown_metadata() ->
         "text/model": frozenset({"text"}),
         "vision/model": frozenset({"text", "image", "video"}),
     }
+
+
+def test_zai_catalog_is_static_text_only_and_tool_capable() -> None:
+    assert {str(model["id"]) for model in ZAI_MODELS} == {
+        "glm-5.3",
+        "glm-5.3-flash",
+        "glm-5.3-highspeed",
+        "glm-5.2",
+        "glm-5-turbo",
+        "glm-4.7",
+    }
+    assert {str(model["id"]) for model in ZAI_MODELS} == ZAI_MODEL_IDS
+    for model in ZAI_MODELS:
+        assert model["provider"] == "zai"
+        assert model["supported_parameters"] == ["tools", "tool_choice"]
+        assert model["architecture"] == {"input_modalities": ["text"]}
+        assert isinstance(model["context_length"], int)
+        assert "pricing" not in model
+
+
+def test_provider_of_and_namespacing_round_trip() -> None:
+    assert provider_of("glm-5.3-flash") == "zai"
+    assert provider_of("z-ai/glm-5.3-flash") == "openrouter"
+    assert namespaced_model("glm-5.3-flash") == "clor/zai/glm-5.3-flash"
+    assert namespaced_model("z-ai/glm-5.3-flash") == "clor/openrouter/z-ai/glm-5.3-flash"
+    assert original_model("clor/zai/glm-5.3-flash") == "glm-5.3-flash"
+    assert original_model("clor/openrouter/z-ai/glm-5.3-flash") == "z-ai/glm-5.3-flash"
+    assert original_model("claude-opus-4-8") is None
+    assert original_model("clor/zai/") is None
+
+
+def test_route_of_namespaced_distinguishes_prefixes() -> None:
+    assert route_of_namespaced("clor/zai/glm-5.3") == "zai"
+    assert route_of_namespaced("clor/openrouter/z-ai/glm-5.3") == "openrouter"
+    assert route_of_namespaced("glm-5.3") is None
+    assert route_of_namespaced("clor/other/glm-5.3") is None
+
+
+def test_zai_picker_row_labels_and_describe_the_coding_plan_without_pricing() -> None:
+    glm = next(model for model in ZAI_MODELS if model["id"] == "glm-5.3-flash")
+    row = picker_row(glm, hybrid=True)
+
+    assert row["model"] == "clor/zai/glm-5.3-flash"
+    assert row["label"] == "GLM-5.3 Flash · Z.ai"
+    assert "Z.ai Coding Plan via claude-openrouter" in row["description"]
+    assert "$" not in row["description"]
+    assert "1000K context" in row["description"]
+
+    hybrid = picker_row(glm)
+    assert hybrid["model"] == "glm-5.3-flash"
+    assert hybrid["label"] == "GLM-5.3 Flash"

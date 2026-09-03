@@ -27,6 +27,7 @@ from .paths import (
     preferences_path,
     router_token_path,
     state_dir,
+    zai_credential_path,
 )
 from .storage import atomic_write_json, atomic_write_text, read_json_object
 
@@ -274,6 +275,11 @@ def configure_claude(
         raise ValueError("Anthropic authentication must be max or api")
     if anthropic_auth == "api" and not anthropic_credential_path().exists():
         raise RuntimeError("Anthropic API mode requires a configured Anthropic credential")
+    needs_zai_key = any(model.get("provider") == "zai" for model in models)
+    if needs_zai_key and not zai_credential_path().exists():
+        raise RuntimeError(
+            "Z.ai favorites require a configured Z.ai key; run `clor config --zai-key`"
+        )
     if not _active_backup():
         migrate_legacy_settings()
 
@@ -357,8 +363,7 @@ def _looks_managed_picker(value: Any) -> bool:
         return False
     options = value.get("options")
     return isinstance(options, list) and any(
-        isinstance(row, dict)
-        and "OpenRouter via claude-openrouter" in str(row.get("description", ""))
+        isinstance(row, dict) and "via claude-openrouter" in str(row.get("description", ""))
         for row in options
     )
 
@@ -413,16 +418,13 @@ def restore_claude_settings() -> bool:
         managed_picker = _looks_managed_picker(settings.get("modelPicker"))
         picker = settings.get("modelPicker")
         picker_options = picker.get("options", []) if isinstance(picker, dict) else []
-        managed_model_ids = {
-            row.get("model") for row in picker_options if isinstance(row, dict)
-        }
+        managed_model_ids = {row.get("model") for row in picker_options if isinstance(row, dict)}
         managed_model = settings.get("model") in managed_model_ids
         env = settings.get("env")
         managed_headers = (
             isinstance(env, dict)
             and isinstance(env.get("ANTHROPIC_CUSTOM_HEADERS"), str)
-            and LOCAL_TOKEN_HEADER.casefold()
-            in env["ANTHROPIC_CUSTOM_HEADERS"].casefold()
+            and LOCAL_TOKEN_HEADER.casefold() in env["ANTHROPIC_CUSTOM_HEADERS"].casefold()
         )
         managed_hook = _remove_managed_agent_hook(settings)
         managed_base = isinstance(env, dict) and (
@@ -441,9 +443,7 @@ def restore_claude_settings() -> bool:
             settings.pop("modelPicker", None)
         if managed_model:
             settings.pop("model", None)
-        if isinstance(env, dict) and (
-            managed_helper or managed_picker or managed_base
-        ):
+        if isinstance(env, dict) and (managed_helper or managed_picker or managed_base):
             env = dict(env)
             if managed_base:
                 env.pop("ANTHROPIC_BASE_URL", None)
@@ -482,8 +482,7 @@ def migrate_legacy_settings() -> bool:
         managed_headers = (
             isinstance(env, dict)
             and isinstance(env.get("ANTHROPIC_CUSTOM_HEADERS"), str)
-            and LOCAL_TOKEN_HEADER.casefold()
-            in env["ANTHROPIC_CUSTOM_HEADERS"].casefold()
+            and LOCAL_TOKEN_HEADER.casefold() in env["ANTHROPIC_CUSTOM_HEADERS"].casefold()
         )
         legacy_present = (
             settings.get("apiKeyHelper") == str(helper_path().resolve())
@@ -494,9 +493,7 @@ def migrate_legacy_settings() -> bool:
                 and (
                     env.get("ANTHROPIC_BASE_URL") == LEGACY_BASE_URL
                     or (
-                        str(env.get("ANTHROPIC_BASE_URL", "")).startswith(
-                            "http://127.0.0.1:"
-                        )
+                        str(env.get("ANTHROPIC_BASE_URL", "")).startswith("http://127.0.0.1:")
                         and managed_headers
                     )
                 )
@@ -533,6 +530,7 @@ def assert_private_files() -> None:
     paths = [
         credential_path(),
         anthropic_credential_path(),
+        zai_credential_path(),
         router_token_path(),
         preferences_path(),
         helper_path(),

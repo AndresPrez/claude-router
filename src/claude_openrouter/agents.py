@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .models import namespaced_model
+from .models import namespaced_model, provider_of
 from .paths import agent_manifest_path, claude_agents_dir
 from .storage import atomic_write_json, atomic_write_text, read_json_object
 
@@ -30,8 +30,11 @@ def agent_name(model_id: str) -> str:
 def _agent_document(model: dict[str, Any], name: str) -> str:
     model_id = str(model["id"])
     label = str(model.get("name") or model_id)
+    zai = provider_of(model_id) == "zai"
+    kind = "Z.ai model" if zai else "OpenRouter favorite"
+    body_model = "configured Z.ai model" if zai else "configured OpenRouter model"
     description = (
-        f"Run a delegated task with the exact OpenRouter favorite {label} ({model_id}). "
+        f"Run a delegated task with the exact {kind} {label} ({model_id}). "
         "Choose this subagent when that model is requested. Do not pass the Agent model "
         "parameter; this definition owns the exact model route."
     )
@@ -43,7 +46,7 @@ model: {json.dumps(namespaced_model(model_id))}
 
 {MANAGED_MARKER}
 
-Complete the delegated task using this configured OpenRouter model. Be explicit about
+Complete the delegated task using this {body_model}. Be explicit about
 limitations and do not claim to be a native Anthropic model.
 """
 

@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import io
+import json
+
+import pytest
 
 from claude_openrouter import cli
 from claude_openrouter.check import ToolProbeResult
+from claude_openrouter.models import ZAI_MODELS
 from claude_openrouter.openrouter import save_catalog, write_credential
-from claude_openrouter.paths import anthropic_credential_path, claude_settings_path
-from claude_openrouter.settings import load_preferences, save_preferences
+from claude_openrouter.paths import (
+    anthropic_credential_path,
+    claude_settings_path,
+    credential_path,
+    zai_credential_path,
+)
+from claude_openrouter.settings import configure_claude, load_preferences, save_preferences
+from claude_openrouter.zai import write_zai_credential
 
 KEY = "sk-or-v1-this-is-a-fake-test-key"
 ANTHROPIC_KEY = "sk-ant-this-is-a-fake-test-key"
+ZAI_KEY = "zai-coding-plan-test-key-0123456789"
+ZAI_MODEL = next(model for model in ZAI_MODELS if model["id"] == "glm-5.3-flash")
 
 
 class TtyBuffer(io.StringIO):
@@ -107,9 +119,7 @@ def test_search_always_refreshes(sample_models, monkeypatch, capsys) -> None:
     assert "Refreshed 4 models; 2 matched." in output.err
 
 
-def test_search_tools_filters_to_advertised_tool_models(
-    sample_models, monkeypatch, capsys
-) -> None:
+def test_search_tools_filters_to_advertised_tool_models(sample_models, monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli, "refresh_catalog", lambda: sample_models)
 
     assert cli.main(["search", "gemini", "--tools"]) == 0
@@ -127,24 +137,21 @@ def test_check_runs_a_live_probe_without_requiring_a_favorite(
     monkeypatch.setattr(
         cli,
         "probe_model",
-        lambda model: checked.append(model)
-        or ToolProbeResult(
-            tool_called=True,
-            tool_completed=True,
-            acknowledged_result=True,
-            returncode=0,
-            total_cost_usd=0.00125,
-            final_text="CLOR_TOOL_CHECK_OK",
-            diagnostic="",
+        lambda model: (
+            checked.append(model)
+            or ToolProbeResult(
+                tool_called=True,
+                tool_completed=True,
+                acknowledged_result=True,
+                returncode=0,
+                total_cost_usd=0.00125,
+                final_text="CLOR_TOOL_CHECK_OK",
+                diagnostic="",
+            )
         ),
     )
 
-    assert (
-        cli.main(
-            ["check", "clor/openrouter/google/gemini-3.1-pro-preview", "--yes"]
-        )
-        == 0
-    )
+    assert cli.main(["check", "clor/openrouter/google/gemini-3.1-pro-preview", "--yes"]) == 0
     assert checked == [sample_models[2]]
     output = capsys.readouterr().out
     assert "Tool round-trip passed" in output
@@ -222,9 +229,7 @@ def test_check_always_allow_is_persistent_and_reversible(
     monkeypatch.setattr(cli, "refresh_catalog", lambda: sample_models)
     monkeypatch.setattr(cli.sys, "stdin", TtyBuffer())
     monkeypatch.setattr("builtins.input", lambda _prompt: "always")
-    monkeypatch.setattr(
-        cli, "probe_model", lambda model: checked.append(model["id"]) or result
-    )
+    monkeypatch.setattr(cli, "probe_model", lambda model: checked.append(model["id"]) or result)
 
     assert cli.main(["check", "google/gemini-3.1-pro-preview"]) == 0
     assert load_preferences()["confirm_billable_checks"] is False
@@ -269,6 +274,78 @@ def test_setup_from_stdin_writes_favorites(
     assert "qwen/qwen3-coder" in output
 
 
+def test_setup_no_openrouter_configures_zai_only_favorites(
+    isolated_home, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli, "_warn_claude_compatibility", lambda: None)
+    monkeypatch.setattr(cli, "has_native_login", lambda: True)
+    monkeypatch.setattr(cli, "start_service", lambda _port: "test service")
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(f"{ZAI_KEY}\n"))
+
+    assert (
+        cli.main(["setup", "--no-openrouter", "--zai-key-stdin", "--models", "glm-5.3-flash"]) == 0
+    )
+
+    assert zai_credential_path().read_text().strip() == ZAI_KEY
+    assert not credential_path().exists()
+    settings = json.loads(claude_settings_path().read_text())
+    assert [row["model"] for row in settings["modelPicker"]["options"]] == [
+        "clor/zai/glm-5.3-flash"
+    ]
+    output = capsys.readouterr().out
+    assert "OpenRouter credential:" not in output
+    assert f"Z.ai credential: {zai_credential_path()} (mode 0600)" in output
+
+
+def test_setup_no_openrouter_cannot_read_the_openrouter_key_from_stdin(isolated_home) -> None:
+    with pytest.raises(ValueError, match="--no-openrouter cannot be combined with --key-stdin"):
+        cli.command_setup(
+            key_stdin=True,
+            no_validate=False,
+            ids=None,
+            anthropic_auth="max",
+            anthropic_key_stdin=False,
+            zai_key=False,
+            zai_key_stdin=False,
+            no_openrouter=True,
+            port=9417,
+        )
+
+
+def test_select_zai_model_without_an_openrouter_credential(
+    isolated_home, monkeypatch, capsys
+) -> None:
+    write_zai_credential(ZAI_KEY)
+    monkeypatch.setattr(cli, "has_native_login", lambda: True)
+    monkeypatch.setattr(cli, "start_service", lambda _port: "test service")
+
+    assert cli.main(["select", "glm-5.3-flash"]) == 0
+    output = capsys.readouterr().out
+    assert "Saved 1 /model favorite" in output
+    assert "glm-5.3-flash" in output
+
+
+def test_doctor_is_healthy_with_a_zai_favorite_and_no_openrouter_credential(
+    isolated_home, monkeypatch, capsys
+) -> None:
+    write_zai_credential(ZAI_KEY)
+    configure_claude([ZAI_MODEL])
+    monkeypatch.setattr(cli, "has_native_login", lambda: True)
+    monkeypatch.setattr(cli, "healthcheck", lambda _port: True)
+
+    assert cli.main(["doctor"]) == 0
+    output = capsys.readouterr().out
+    assert "OpenRouter credential: not needed" in output
+    assert "Z.ai credential: configured" in output
+
+
+def test_search_without_an_openrouter_credential_shows_zai_models(isolated_home, capsys) -> None:
+    assert cli.main(["search", "glm"]) == 0
+    output = capsys.readouterr()
+    assert "glm-5.3-flash" in output.out
+    assert "note: no OpenRouter credential; showing Z.ai models only" in output.err
+
+
 def test_select_positional_maps_to_one_model(
     isolated_home, sample_models, monkeypatch, capsys
 ) -> None:
@@ -302,9 +379,7 @@ def test_select_rejects_ambiguous_arguments(isolated_home, sample_models, monkey
     assert cli.main(["select", "qwen/qwen3-coder", "--model", "other/model"]) == 1
 
 
-def test_claude_prepares_favorites_then_launches(
-    isolated_home, sample_models, monkeypatch
-) -> None:
+def test_claude_prepares_favorites_then_launches(isolated_home, sample_models, monkeypatch) -> None:
     write_credential(KEY)
     monkeypatch.setattr(cli, "favorite_ids", lambda: ["qwen/qwen3-coder"])
     monkeypatch.setattr(cli, "load_catalog", lambda: sample_models)
@@ -331,6 +406,25 @@ def test_config_can_switch_native_models_to_private_anthropic_api_key(
     assert cli.main(["config", "--anthropic-key-stdin"]) == 0
     assert anthropic_credential_path().read_text().strip() == ANTHROPIC_KEY
     assert load_preferences()["anthropic_auth"] == "api"
+
+
+def test_config_zai_key_stdin_writes_a_private_credential(
+    isolated_home, monkeypatch, capsys
+) -> None:
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO(f"{ZAI_KEY}\n"))
+
+    assert cli.main(["config", "--zai-key-stdin"]) == 0
+
+    assert zai_credential_path().read_text().strip() == ZAI_KEY
+    assert zai_credential_path().stat().st_mode & 0o777 == 0o600
+    output = capsys.readouterr().out
+    assert f"Z.ai credential updated: {zai_credential_path()} (mode 0600)" in output
+
+
+def test_config_zai_key_cannot_be_combined_with_other_credentials(isolated_home) -> None:
+    assert cli.main(["config", "--zai-key-stdin", "--key-stdin"]) == 1
+    assert cli.main(["config", "--zai-key-stdin", "--anthropic-key-stdin"]) == 1
+    assert not zai_credential_path().exists()
 
 
 def test_update_restarts_an_existing_hybrid_router(

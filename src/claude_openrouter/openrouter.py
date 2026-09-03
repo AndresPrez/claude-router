@@ -10,6 +10,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
+from .models import ZAI_MODELS
 from .paths import catalog_path, credential_path
 from .storage import atomic_write_json, atomic_write_text, read_json_object
 
@@ -118,19 +119,38 @@ def save_catalog(models: list[dict[str, Any]]) -> None:
 
 
 def refresh_catalog(key: str | None = None) -> list[dict[str, Any]]:
-    models = fetch_models(key or read_credential())
+    if key is None:
+        try:
+            key = read_credential()
+        except RuntimeError:
+            # No OpenRouter credential: Z.ai-only setups still get the static
+            # Coding Plan catalog. A present but malformed credential raises.
+            return merged_catalog([])
+    models = fetch_models(key)
     save_catalog(models)
-    return models
+    return merged_catalog(models)
 
 
 def load_catalog() -> list[dict[str, Any]]:
     path = catalog_path()
-    try:
-        document = read_json_object(path)
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"model index not found at {path}; run index") from exc
+    if not path.exists():
+        # No cached index yet: Z.ai-only setups can work from the static catalog.
+        return merged_catalog([])
+    document = read_json_object(path)
     models = document.get("models")
     if not isinstance(models, list):
         raise RuntimeError(f"invalid model index at {path}; run index again")
-    return [item for item in models if isinstance(item, dict) and isinstance(item.get("id"), str)]
+    return merged_catalog(
+        [item for item in models if isinstance(item, dict) and isinstance(item.get("id"), str)]
+    )
 
+
+def merged_catalog(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Append the static Z.ai entries without storing them in the cached index."""
+    seen = {str(model["id"]) for model in models if isinstance(model.get("id"), str)}
+    merged = list(models)
+    for model in ZAI_MODELS:
+        if str(model["id"]) not in seen:
+            seen.add(str(model["id"]))
+            merged.append(model)
+    return merged

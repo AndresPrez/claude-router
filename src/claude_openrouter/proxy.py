@@ -1,4 +1,4 @@
-"""Fail-closed local router for native Claude and OpenRouter models."""
+"""Fail-closed local router for native Claude, OpenRouter, and Z.ai models."""
 
 from __future__ import annotations
 
@@ -20,11 +20,13 @@ from .models import (
     exact_models,
     hybrid_openrouter_allowed,
     original_model,
+    route_of_namespaced,
 )
 from .openrouter import load_catalog, read_credential
 from .paths import router_status_path, router_token_path
 from .settings import favorite_ids, load_preferences, refresh_managed_subagents
 from .storage import atomic_write_json
+from .zai import ZAI_UPSTREAM, read_zai_credential
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9417
@@ -250,8 +252,7 @@ def _remove_gemini_thinking_content(body: bytes) -> bytes:
     payload["content"] = [
         block
         for block in payload["content"]
-        if not isinstance(block, dict)
-        or block.get("type") not in {"thinking", "redacted_thinking"}
+        if not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking"}
     ]
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
 
@@ -276,13 +277,17 @@ def read_router_token() -> str:
 
 def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
     """Return ``(route, upstream_model)`` or reject an ambiguous model."""
-    openrouter_model = original_model(model)
-    if openrouter_model is not None:
-        if not hybrid_openrouter_allowed(openrouter_model):
+    bare_model = original_model(model)
+    if bare_model is not None:
+        if route_of_namespaced(model) == "zai":
+            if bare_model not in favorites:
+                raise ValueError("Z.ai model is not in the clor favorites allowlist")
+            return "zai", bare_model
+        if not hybrid_openrouter_allowed(bare_model):
             raise ValueError("Anthropic and automatic models are blocked on the OpenRouter route")
-        if openrouter_model not in favorites:
+        if bare_model not in favorites:
             raise ValueError("OpenRouter model is not in the clor favorites allowlist")
-        return "openrouter", openrouter_model
+        return "openrouter", bare_model
     if model in {"default", "opus", "sonnet", "haiku"} or model.startswith("claude-"):
         return "anthropic", model
     raise ValueError(
@@ -303,9 +308,9 @@ def route_payload(
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), str):
         raise ValueError("request body must contain a string model")
     route, upstream_model = classify_model(payload["model"], favorites)
-    if route == "openrouter":
+    if route in {"openrouter", "zai"}:
         payload["model"] = upstream_model
-        if upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
+        if route == "openrouter" and upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
             _repair_gemini_tool_schemas(payload)
             _remove_gemini_adaptive_thinking(payload)
         modalities = (model_modalities or {}).get(upstream_model)
@@ -369,11 +374,12 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             route, model, body = route_payload(
                 body, self.router.favorites, self.router.model_modalities
             )
-            upstream = (
-                self.router.openrouter_upstream
-                if route == "openrouter"
-                else self.router.anthropic_upstream
-            )
+            if route == "openrouter":
+                upstream = self.router.openrouter_upstream
+            elif route == "zai":
+                upstream = self.router.zai_upstream
+            else:
+                upstream = self.router.anthropic_upstream
             headers = self._upstream_headers(route, model, len(body))
             self._forward(
                 upstream,
@@ -381,8 +387,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 headers,
                 body,
                 normalize_gemini=(
-                    route == "openrouter"
-                    and model.casefold().startswith(GEMINI_MODEL_PREFIX)
+                    route == "openrouter" and model.casefold().startswith(GEMINI_MODEL_PREFIX)
                 ),
             )
             self._record_status(route, model, None)
@@ -393,9 +398,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             self._error_response(502, "api_error", f"routing failed: {exc}")
             self._record_status("error", "unknown", str(exc))
 
-    def _upstream_headers(
-        self, route: str, model: str, content_length: int
-    ) -> dict[str, str]:
+    def _upstream_headers(self, route: str, model: str, content_length: int) -> dict[str, str]:
         removed = HOP_BY_HOP | {
             "host",
             "content-length",
@@ -421,6 +424,8 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             headers["Authorization"] = f"Bearer {read_credential()}"
             headers["HTTP-Referer"] = "https://github.com/xhluca/claude-openrouter"
             headers["X-Title"] = "Claude OpenRouter"
+        elif route == "zai":
+            headers["Authorization"] = f"Bearer {read_zai_credential()}"
         elif self.router.anthropic_auth == "api":
             headers["X-Api-Key"] = read_anthropic_credential()
         else:
@@ -549,6 +554,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         anthropic_auth: str,
         anthropic_upstream: str = ANTHROPIC_UPSTREAM,
         openrouter_upstream: str = OPENROUTER_UPSTREAM,
+        zai_upstream: str = ZAI_UPSTREAM,
         model_modalities: dict[str, frozenset[str]] | None = None,
         record_status: bool = True,
     ) -> None:
@@ -559,6 +565,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         self.anthropic_auth = anthropic_auth
         self.anthropic_upstream = anthropic_upstream
         self.openrouter_upstream = openrouter_upstream
+        self.zai_upstream = zai_upstream
         self.model_modalities = model_modalities or {}
         self.record_status = record_status
         super().__init__(address, HybridRouterHandler)

@@ -9,12 +9,11 @@ from claude_openrouter.agents import (
     rewrite_agent_input,
     sync_managed_agents,
 )
+from claude_openrouter.models import ZAI_MODELS
 from claude_openrouter.paths import agent_manifest_path, claude_agents_dir
 
 
-def test_managed_agents_expose_each_exact_openrouter_favorite(
-    isolated_home, sample_models
-) -> None:
+def test_managed_agents_expose_each_exact_openrouter_favorite(isolated_home, sample_models) -> None:
     selected = sample_models[2:]
 
     routes = sync_managed_agents(selected)
@@ -30,6 +29,18 @@ def test_managed_agents_expose_each_exact_openrouter_favorite(
         assert MANAGED_MARKER in document
         assert f"model: {json.dumps(route)}" in document
         assert "Do not pass the Agent model parameter" in document
+
+
+def test_zai_agents_describe_the_zai_route(isolated_home) -> None:
+    zai_model = next(model for model in ZAI_MODELS if model["id"] == "glm-5.3-flash")
+
+    routes = sync_managed_agents([zai_model])
+
+    assert routes == {agent_name("glm-5.3-flash"): "clor/zai/glm-5.3-flash"}
+    document = (claude_agents_dir() / f"{agent_name('glm-5.3-flash')}.md").read_text()
+    assert MANAGED_MARKER in document
+    assert "exact Z.ai model GLM-5.3 Flash" in document
+    assert "configured Z.ai model" in document
 
 
 def test_agent_hook_removes_native_alias_override_only_for_managed_agent(
@@ -54,12 +65,15 @@ def test_agent_hook_removes_native_alias_override_only_for_managed_agent(
     assert output["updatedInput"] == {
         key: value for key, value in original.items() if key != "model"
     }
-    assert rewrite_agent_input(
-        {
-            "tool_name": "Agent",
-            "tool_input": {**original, "subagent_type": "general-purpose"},
-        }
-    ) is None
+    assert (
+        rewrite_agent_input(
+            {
+                "tool_name": "Agent",
+                "tool_input": {**original, "subagent_type": "general-purpose"},
+            }
+        )
+        is None
+    )
     assert rewrite_agent_input({"tool_name": "Read", "tool_input": original}) is None
 
 

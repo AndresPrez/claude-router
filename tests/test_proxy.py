@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+from claude_openrouter.models import ZAI_MODEL_IDS
 from claude_openrouter.openrouter import write_credential
 from claude_openrouter.paths import anthropic_credential_path
 from claude_openrouter.proxy import (
@@ -21,11 +22,14 @@ from claude_openrouter.proxy import (
     route_payload,
 )
 from claude_openrouter.storage import atomic_write_text
+from claude_openrouter.zai import write_zai_credential
 
 OPENROUTER_KEY = "sk-or-v1-this-is-a-fake-test-key"
 ANTHROPIC_KEY = "sk-ant-this-is-a-fake-test-key"
+ZAI_KEY = "zai-coding-plan-test-key-0123456789"
 LOCAL_TOKEN = "local-router-test-token"
 GLM = "z-ai/glm-5.3-flash"
+ZAI = "glm-5.3-flash"
 DEEPSEEK = "~deepseek/deepseek-v4-flash-latest"
 GEMINI = "google/gemini-3.8-flash"
 STREAM_FIRST = b"data: first\n\n"
@@ -81,6 +85,7 @@ class StreamingUpstream(BaseHTTPRequestHandler):
 def routing_servers(isolated_home):
     write_credential(OPENROUTER_KEY)
     atomic_write_text(anthropic_credential_path(), f"{ANTHROPIC_KEY}\n", 0o600)
+    write_zai_credential(ZAI_KEY)
     RecordingUpstream.requests = []
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), RecordingUpstream)
     upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
@@ -89,10 +94,11 @@ def routing_servers(isolated_home):
     router = HybridRouterServer(
         ("127.0.0.1", 0),
         local_token=LOCAL_TOKEN,
-        favorites={GLM, GEMINI},
+        favorites={GLM, GEMINI, ZAI},
         anthropic_auth="max",
         anthropic_upstream=f"{base}/anthropic",
         openrouter_upstream=f"{base}/openrouter",
+        zai_upstream=f"{base}/zai",
     )
     router_thread = threading.Thread(target=router.serve_forever, daemon=True)
     router_thread.start()
@@ -155,6 +161,22 @@ def test_gemini_route_strips_claude_beta_header(routing_servers) -> None:
     ) as response:
         assert response.status == 200
     assert "anthropic-beta" not in RecordingUpstream.requests[-1]["headers"]
+
+
+def test_zai_route_uses_zai_upstream_and_only_the_zai_key(routing_servers) -> None:
+    with request(routing_servers, f"clor/zai/{ZAI}") as response:
+        assert response.status == 200
+    captured = RecordingUpstream.requests[-1]
+    assert captured["path"] == "/zai/v1/messages"
+    assert captured["body"]["model"] == ZAI  # type: ignore[index]
+    headers = captured["headers"]
+    assert headers["authorization"] == f"Bearer {ZAI_KEY}"  # type: ignore[index]
+    assert "x-api-key" not in headers
+    assert "http-referer" not in headers
+    assert "x-title" not in headers
+    assert OPENROUTER_KEY not in json.dumps(captured)
+    assert ANTHROPIC_KEY not in json.dumps(captured)
+    assert "max-oauth" not in json.dumps(captured)
 
 
 def test_non_gemini_route_preserves_claude_beta_header(routing_servers) -> None:
@@ -285,10 +307,61 @@ def test_router_bind_does_not_wait_for_reverse_dns(isolated_home, monkeypatch) -
 def test_model_classification_is_explicit() -> None:
     assert classify_model("claude-opus-5", {GLM}) == ("anthropic", "claude-opus-5")
     assert classify_model(f"clor/openrouter/{GLM}", {GLM}) == ("openrouter", GLM)
+    assert classify_model(f"clor/zai/{ZAI}", {ZAI}) == ("zai", ZAI)
     with pytest.raises(ValueError, match="no trusted route"):
         classify_model(GLM, {GLM})
     with pytest.raises(ValueError, match="blocked on the OpenRouter route"):
         classify_model("clor/openrouter/anthropic/claude-opus-5", {"anthropic/claude-opus-5"})
+
+
+def test_zai_classification_requires_the_favorites_allowlist() -> None:
+    assert ZAI in ZAI_MODEL_IDS
+    assert classify_model(f"clor/zai/{ZAI}", {ZAI}) == ("zai", ZAI)
+    with pytest.raises(ValueError, match="Z.ai model is not in the clor favorites allowlist"):
+        classify_model(f"clor/zai/{ZAI}", set())
+
+
+def test_zai_route_payload_rewrites_model_and_keeps_other_fields() -> None:
+    payload = {
+        "model": f"clor/zai/{ZAI}",
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {ZAI})
+    routed = json.loads(body)
+
+    assert (route, model, routed["model"]) == ("zai", ZAI, ZAI)
+    assert routed["max_tokens"] == 128
+    assert routed["messages"] == payload["messages"]
+
+
+def test_zai_text_only_modality_handling_matches_openrouter() -> None:
+    payload = {
+        "model": f"clor/zai/{ZAI}",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+                    }
+                ],
+            }
+        ],
+    }
+
+    route, model, body = route_payload(
+        json.dumps(payload).encode(), {ZAI}, {ZAI: frozenset({"text"})}
+    )
+    routed = json.loads(body)
+
+    assert (route, model) == ("zai", ZAI)
+    replacement = routed["messages"][0]["content"][0]
+    assert replacement["type"] == "text"
+    assert "InputError[unsupported_input_modality]" in replacement["text"]
+    assert '"data":"abc"' not in body.decode()
 
 
 def test_text_only_model_receives_capability_notice_and_failed_image_tool_result() -> None:
@@ -435,9 +508,7 @@ def test_gemini_route_repairs_nested_itemless_tool_arrays() -> None:
 
     route, model, body = route_payload(json.dumps(payload).encode(), {GEMINI})
     routed = json.loads(body)
-    where = routed["tools"][0]["input_schema"]["properties"]["query"][
-        "properties"
-    ]["where"]
+    where = routed["tools"][0]["input_schema"]["properties"]["query"]["properties"]["where"]
 
     assert (route, model, routed["model"]) == ("openrouter", GEMINI, GEMINI)
     assert "thinking" not in routed
@@ -485,9 +556,7 @@ def test_gemini_sse_filter_removes_thinking_block_and_signature() -> None:
     ]
     thinking_indexes: set[int] = set()
 
-    filtered = b"".join(
-        _filter_gemini_sse_event(event, thinking_indexes) for event in events
-    )
+    filtered = b"".join(_filter_gemini_sse_event(event, thinking_indexes) for event in events)
 
     assert b'"text":"hello"' in filtered
     assert b'"index":0' in filtered

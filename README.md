@@ -159,6 +159,7 @@ Claude subagents and `inherit` behavior are untouched.
 | --- | --- | --- |
 | Built-in Opus, Sonnet, or Haiku | Anthropic | Claude Max OAuth by default |
 | A row labeled `· OpenRouter` | OpenRouter | Stored OpenRouter key |
+| A row labeled `· Z.ai` | Z.ai | Stored Z.ai Coding Plan key |
 
 The router never infers a provider from a bare third-party ID. OpenRouter rows
 use a private `clor/openrouter/` namespace, and an unknown or unfavorited model
@@ -194,6 +195,42 @@ actual limitation and suggest a vision-capable `/model` favorite instead of
 showing Claude Code's generic model-access error. Image inputs pass through
 unchanged for models whose catalog metadata includes `image`.
 
+## Z.ai Coding Plan models
+
+Only have a Z.ai Coding Plan and no OpenRouter account? Configure everything
+with the Z.ai-only quick start:
+
+```bash
+clor setup --no-openrouter
+```
+
+GLM models can run on a Z.ai Coding Plan subscription instead of pay-per-token
+OpenRouter credits. Configure the Z.ai key once, stored with mode `0600` inside
+the router like the other credentials:
+
+```bash
+clor config --zai-key
+# or non-interactively:
+clor config --zai-key-stdin < zai-key.txt
+```
+
+Then select the slash-free GLM model ids (`glm-5.3`, `glm-5.3-flash`,
+`glm-5.3-highspeed`, `glm-5.2`, `glm-5-turbo`, `glm-4.7`) exactly like any other
+favorite:
+
+```bash
+clor select glm-5.3-flash
+```
+
+They appear in `clor search`, the interactive picker, and Claude Code's
+`/model` picker as rows labeled `· Z.ai` (described as "Z.ai Coding Plan via
+claude-openrouter", with no per-token price because usage bills to the
+subscription quota). Requests to those rows go to Z.ai's Anthropic-compatible
+endpoint with the stored Z.ai key, and each favorite also gets a generated
+`clor-*` subagent like the OpenRouter rows. The keys are never crossed: the
+Z.ai key is never sent to Anthropic or OpenRouter, and the OpenRouter key and
+Claude OAuth bearer are never sent to Z.ai.
+
 ## Commands
 
 | Command | Purpose |
@@ -221,8 +258,8 @@ accepted as command-line arguments; automation can pipe one to `setup
 
 ```text
                                     ┌─ Claude model ─────► Anthropic
-Claude Code ─► 127.0.0.1 router ────┤
-                                    └─ clor/openrouter/* ► OpenRouter
+Claude Code ─► 127.0.0.1 router ────┼─ clor/openrouter/* ► OpenRouter
+                                    └─ clor/zai/* ──────► Z.ai
 ```
 
 - Stores the key at `~/.config/claude-openrouter/credential` with mode `0600`.

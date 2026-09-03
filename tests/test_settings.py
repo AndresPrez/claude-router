@@ -6,6 +6,7 @@ import stat
 import pytest
 from conftest import write_json
 
+from claude_openrouter.models import ZAI_MODELS
 from claude_openrouter.openrouter import write_credential
 from claude_openrouter.paths import (
     agent_manifest_path,
@@ -19,6 +20,7 @@ from claude_openrouter.paths import (
 )
 from claude_openrouter.settings import (
     BASE_URL,
+    _looks_managed_picker,
     configure_claude,
     load_preferences,
     refresh_claude_credential,
@@ -29,9 +31,12 @@ from claude_openrouter.settings import (
     set_check_confirmation,
     write_key_helper,
 )
+from claude_openrouter.zai import write_zai_credential
 
 KEY = "sk-or-v1-this-is-a-fake-test-key"
 NEW_KEY = "sk-or-v1-this-is-a-new-fake-test-key"
+ZAI_KEY = "zai-coding-plan-test-key-0123456789"
+ZAI_MODEL = next(model for model in ZAI_MODELS if model["id"] == "glm-5.3-flash")
 
 
 def test_billable_check_confirmation_survives_favorite_changes(
@@ -54,9 +59,7 @@ def write_legacy_backup(original: dict, *, existed: bool = True) -> None:
 
     def snapshot(document, field):
         return (
-            {"present": True, "value": document[field]}
-            if field in document
-            else {"present": False}
+            {"present": True, "value": document[field]} if field in document else {"present": False}
         )
 
     write_json(
@@ -88,6 +91,48 @@ def test_hybrid_configuration_blocks_anthropic_models_on_openrouter(
     write_credential(KEY)
     with pytest.raises(ValueError, match="keeps Anthropic models off OpenRouter"):
         configure_claude(sample_models[:1])
+
+
+def test_configure_with_zai_favorite_requires_a_zai_credential_and_namespaces_the_row(
+    isolated_home, sample_models
+) -> None:
+    write_credential(KEY)
+
+    with pytest.raises(RuntimeError, match="Z.ai favorites require a configured Z.ai key"):
+        configure_claude([sample_models[2], ZAI_MODEL])
+
+    write_zai_credential(ZAI_KEY)
+    configure_claude([sample_models[2], ZAI_MODEL])
+
+    settings = read_json(claude_settings_path())
+    rows = settings["modelPicker"]["options"]
+    assert [row["model"] for row in rows] == [
+        "clor/openrouter/google/gemini-3.1-pro-preview",
+        "clor/zai/glm-5.3-flash",
+    ]
+    zai_row = rows[-1]
+    assert zai_row["label"] == "GLM-5.3 Flash · Z.ai"
+    assert "Z.ai Coding Plan via claude-openrouter" in zai_row["description"]
+    assert "$" not in zai_row["description"]
+    assert len(list(claude_agents_dir().glob("clor-*.md"))) == 2
+
+
+def test_managed_picker_detection_covers_zai_rows(isolated_home) -> None:
+    zai_picker = {
+        "options": [
+            {
+                "model": "clor/zai/glm-5.3-flash",
+                "description": (
+                    "glm-5.3-flash · Z.ai Coding Plan via claude-openrouter · "
+                    "tools ✓ · tool choice ✓ · 1M context"
+                ),
+            }
+        ]
+    }
+
+    assert _looks_managed_picker(zai_picker) is True
+    assert _looks_managed_picker({"options": [{"model": "x", "description": "custom"}]}) is False
+    assert _looks_managed_picker(None) is False
 
 
 def test_restore_does_not_claim_an_unrelated_loopback_gateway(isolated_home) -> None:
@@ -185,9 +230,7 @@ def test_router_startup_upgrades_v3_backup_before_adding_subagent_hook(
         "theme": "dark",
         "model": "sonnet",
         "hooks": {
-            "Notification": [
-                {"matcher": "*", "hooks": [{"type": "command", "command": "notify"}]}
-            ]
+            "Notification": [{"matcher": "*", "hooks": [{"type": "command", "command": "notify"}]}]
         },
     }
     current = {
@@ -214,9 +257,7 @@ def test_router_startup_upgrades_v3_backup_before_adding_subagent_hook(
 
     def snapshot(document, field):
         return (
-            {"present": True, "value": document[field]}
-            if field in document
-            else {"present": False}
+            {"present": True, "value": document[field]} if field in document else {"present": False}
         )
 
     write_json(
@@ -252,9 +293,7 @@ def test_router_startup_upgrades_v3_backup_before_adding_subagent_hook(
     assert read_json(claude_settings_path()) == original
 
 
-def test_config_updates_the_persistent_authorization_header(
-    isolated_home, sample_models
-) -> None:
+def test_config_updates_the_persistent_authorization_header(isolated_home, sample_models) -> None:
     write_credential(KEY)
     configure_claude(sample_models[2:3])
 
@@ -267,9 +306,7 @@ def test_config_updates_the_persistent_authorization_header(
     assert NEW_KEY not in settings["env"]["ANTHROPIC_CUSTOM_HEADERS"]
 
 
-def test_configure_without_native_login_uses_token_fallback(
-    isolated_home, sample_models
-) -> None:
+def test_configure_without_native_login_uses_token_fallback(isolated_home, sample_models) -> None:
     write_json(
         claude_settings_path(),
         {"env": {"ANTHROPIC_CUSTOM_HEADERS": "X-Trace: yes\nAuthorization: stale"}},
@@ -281,9 +318,7 @@ def test_configure_without_native_login_uses_token_fallback(
     env = read_json(claude_settings_path())["env"]
     token = router_token_path().read_text().strip()
     assert env["ANTHROPIC_AUTH_TOKEN"] == token
-    assert env["ANTHROPIC_CUSTOM_HEADERS"] == (
-        f"X-Trace: yes\nX-Claude-OpenRouter-Token: {token}"
-    )
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == (f"X-Trace: yes\nX-Claude-OpenRouter-Token: {token}")
 
     assert refresh_claude_credential(NEW_KEY) is True
     assert read_json(claude_settings_path())["env"]["ANTHROPIC_AUTH_TOKEN"] == token
@@ -401,9 +436,7 @@ def test_configure_cleans_recognizable_legacy_settings_without_backup(
     assert read_json(claude_settings_path()) == {"theme": "dark", "env": {"KEEP": "yes"}}
 
 
-def test_reset_removes_tool_data_and_restores_native_settings(
-    isolated_home, sample_models
-) -> None:
+def test_reset_removes_tool_data_and_restores_native_settings(isolated_home, sample_models) -> None:
     original = {"theme": "dark", "model": "sonnet"}
     write_json(claude_settings_path(), original)
     write_credential(KEY)
@@ -414,9 +447,7 @@ def test_reset_removes_tool_data_and_restores_native_settings(
     assert not config_dir().exists()
 
 
-def test_reset_restores_unmigrated_legacy_integration(
-    isolated_home, sample_models
-) -> None:
+def test_reset_restores_unmigrated_legacy_integration(isolated_home, sample_models) -> None:
     original = {"model": "sonnet"}
     write_json(claude_settings_path(), original)
     write_legacy_backup(original)
