@@ -19,7 +19,7 @@ def read_zai_credential() -> str:
         key = path.read_text(encoding="utf-8").strip()
     except FileNotFoundError as exc:
         raise RuntimeError(
-            f"Z.ai credential not found at {path}; run `clor config --zai-key`"
+            f"Z.ai credential not found at {path}; run `clr config --zai-key`"
         ) from exc
     validate_zai_key_shape(key)
     return key

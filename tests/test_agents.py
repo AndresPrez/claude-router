@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 
-from claude_openrouter.agents import (
+from claude_router.agents import (
     MANAGED_MARKER,
     agent_name,
     remove_managed_agents,
     rewrite_agent_input,
     sync_managed_agents,
 )
-from claude_openrouter.models import ZAI_MODELS
-from claude_openrouter.paths import agent_manifest_path, claude_agents_dir
+from claude_router.models import ZAI_MODELS
+from claude_router.paths import agent_manifest_path, claude_agents_dir
 
 
 def test_managed_agents_expose_each_exact_openrouter_favorite(isolated_home, sample_models) -> None:
@@ -19,7 +19,7 @@ def test_managed_agents_expose_each_exact_openrouter_favorite(isolated_home, sam
     routes = sync_managed_agents(selected)
 
     assert routes == {
-        agent_name(model["id"]): f"clor/openrouter/{model['id']}" for model in selected
+        agent_name(model["id"]): f"clr/openrouter/{model['id']}" for model in selected
     }
     manifest = json.loads(agent_manifest_path().read_text())
     assert set(manifest["agents"]) == set(routes)
@@ -36,7 +36,7 @@ def test_zai_agents_describe_the_zai_route(isolated_home) -> None:
 
     routes = sync_managed_agents([zai_model])
 
-    assert routes == {agent_name("glm-5.3-flash"): "clor/zai/glm-5.3-flash"}
+    assert routes == {agent_name("glm-5.3-flash"): "clr/zai/glm-5.3-flash"}
     document = (claude_agents_dir() / f"{agent_name('glm-5.3-flash')}.md").read_text()
     assert MANAGED_MARKER in document
     assert "exact Z.ai model GLM-5.3 Flash" in document
@@ -77,7 +77,7 @@ def test_agent_hook_removes_native_alias_override_only_for_managed_agent(
     assert rewrite_agent_input({"tool_name": "Read", "tool_input": original}) is None
 
 
-def test_reselection_replaces_only_clor_owned_agent_files(isolated_home, sample_models) -> None:
+def test_reselection_replaces_only_clr_owned_agent_files(isolated_home, sample_models) -> None:
     sync_managed_agents(sample_models[2:])
     unrelated = claude_agents_dir() / "user-agent.md"
     unrelated.write_text("user owned")

@@ -19,7 +19,7 @@ KEY_PATTERN = re.compile(r"^sk-or-[^\s]{10,}$")
 
 
 def api_base() -> str:
-    return os.environ.get("CLAUDE_OPENROUTER_API_BASE", DEFAULT_API_BASE).rstrip("/")
+    return os.environ.get("CLAUDE_ROUTER_API_BASE", DEFAULT_API_BASE).rstrip("/")
 
 
 def validate_key_shape(key: str) -> None:
@@ -62,8 +62,8 @@ def api_json(path: str, key: str) -> dict[str, Any]:
         headers={
             "Authorization": f"Bearer {key}",
             "Accept": "application/json",
-            "User-Agent": "claude-openrouter/0.1",
-            "X-Title": "Claude OpenRouter",
+            "User-Agent": "claude-router/0.1",
+            "X-Title": "Claude Router",
         },
     )
     try:

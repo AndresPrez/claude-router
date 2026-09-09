@@ -9,15 +9,11 @@ import shutil
 import site
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from importlib import metadata
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
 
-PACKAGE_NAME = "claude-openrouter"
-DEFAULT_INDEX_URL = "https://pypi.org/simple"
-PYPI_JSON_URL = "https://pypi.org/pypi/claude-openrouter/json"
+PACKAGE_NAME = "claude-router"
+PACKAGE_SOURCE = "git+https://github.com/AndresPrez/claude-router"
 
 
 def _inside(path: Path, directory: Path) -> bool:
@@ -43,7 +39,7 @@ def _command_stdout(command: list[str]) -> str | None:
 
 
 def _fallback_tool_dir() -> Path:
-    configured = os.environ.get("CLAUDE_OPENROUTER_TOOL_DIR")
+    configured = os.environ.get("CLAUDE_ROUTER_TOOL_DIR")
     if configured:
         return Path(configured)
     data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
@@ -64,54 +60,6 @@ def _is_editable_install() -> bool:
     return bool(document.get("dir_info", {}).get("editable"))
 
 
-def _source_install_location() -> str | None:
-    """Return a direct source location that a registry update must not replace."""
-    try:
-        direct_url = metadata.distribution(PACKAGE_NAME).read_text("direct_url.json")
-    except metadata.PackageNotFoundError:
-        return None
-    if not direct_url:
-        return None
-    try:
-        document = json.loads(direct_url)
-    except (TypeError, json.JSONDecodeError):
-        return None
-    if "dir_info" not in document and "vcs_info" not in document:
-        return None
-    url = document.get("url")
-    if not isinstance(url, str) or not url:
-        return "an unknown source checkout"
-    parsed = urlsplit(url)
-    if parsed.scheme == "file":
-        return unquote(parsed.path)
-    return url
-
-
-def _stable_version_tuple(value: str) -> tuple[int, ...] | None:
-    if re.fullmatch(r"\d+(?:\.\d+)*", value) is None:
-        return None
-    return tuple(int(part) for part in value.split("."))
-
-
-def _published_version() -> str | None:
-    """Return the latest stable PyPI version when using the default registry."""
-    index_url = os.environ.get("CLAUDE_OPENROUTER_PYPI_INDEX_URL", DEFAULT_INDEX_URL)
-    if index_url.rstrip("/") != DEFAULT_INDEX_URL.rstrip("/"):
-        return None
-    request = urllib.request.Request(
-        PYPI_JSON_URL,
-        headers={"User-Agent": f"{PACKAGE_NAME}-updater"},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=10) as response:
-            document = json.load(response)
-    except (OSError, ValueError, urllib.error.URLError):
-        return None
-    info = document.get("info") if isinstance(document, dict) else None
-    version = info.get("version") if isinstance(info, dict) else None
-    return version if isinstance(version, str) and version else None
-
-
 def _pip_command(*, user: bool = False) -> list[str]:
     command = [
         sys.executable,
@@ -121,19 +69,16 @@ def _pip_command(*, user: bool = False) -> list[str]:
         "--disable-pip-version-check",
         "--no-cache-dir",
         "--upgrade",
-        "--index-url",
-        os.environ.get("CLAUDE_OPENROUTER_PYPI_INDEX_URL", DEFAULT_INDEX_URL),
     ]
     if user:
         command.append("--user")
-    command.append(PACKAGE_NAME)
+    command.append(PACKAGE_SOURCE)
     return command
 
 
 def _upgrade_command() -> list[str]:
-    """Return an in-place upgrade command for the environment running clor."""
+    """Return an in-place upgrade command for the environment running clr."""
     environment = Path(sys.prefix)
-    index_url = os.environ.get("CLAUDE_OPENROUTER_PYPI_INDEX_URL", DEFAULT_INDEX_URL)
 
     uv = shutil.which("uv")
     if uv:
@@ -148,9 +93,7 @@ def _upgrade_command() -> list[str]:
                 "copy",
                 "--refresh-package",
                 PACKAGE_NAME,
-                "--default-index",
-                index_url,
-                PACKAGE_NAME,
+                PACKAGE_SOURCE,
             ]
 
     if _inside(environment, _fallback_tool_dir()):
@@ -160,7 +103,7 @@ def _upgrade_command() -> list[str]:
     if pipx:
         pipx_venvs = _command_stdout([pipx, "environment", "--value", "PIPX_LOCAL_VENVS"])
         if pipx_venvs and _inside(environment, Path(pipx_venvs)):
-            return [pipx, "upgrade", PACKAGE_NAME, "--index-url", index_url]
+            return [pipx, "upgrade", PACKAGE_NAME]
 
     if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
         if _is_editable_install():
@@ -186,8 +129,8 @@ def _upgrade_command() -> list[str]:
 
 def _installed_version() -> str:
     scripts = Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin")
-    candidates = [scripts / "clor", scripts / "claude-openrouter"]
-    for name in ("clor", "claude-openrouter"):
+    candidates = [scripts / "clr", scripts / "claude-router"]
+    for name in ("clr", "claude-router"):
         found = shutil.which(name)
         if found:
             candidates.append(Path(found))
@@ -210,35 +153,18 @@ def _installed_version() -> str:
         version = reported.removeprefix(f"{PACKAGE_NAME} ")
         if version and not re.search(r"\s|[\x00-\x1f\x7f]", version):
             return version
-    raise RuntimeError("the updated clor executable could not be verified")
+    raise RuntimeError("the updated clr executable could not be verified")
 
 
 def update_installed_package(previous_version: str) -> None:
-    """Upgrade clor in place and report the version transition."""
-    print("Checking for the latest Claude OpenRouter release…")
-    source = _source_install_location()
-    if source is not None:
-        published = _published_version()
-        current_tuple = _stable_version_tuple(previous_version)
-        published_tuple = _stable_version_tuple(published) if published else None
-        if current_tuple is None or published_tuple is None:
-            raise RuntimeError(
-                f"this clor build is installed from source at {source}; the published version "
-                "could not be compared safely, so the registry update was refused"
-            )
-        if published_tuple <= current_tuple:
-            relation = "matches" if published_tuple == current_tuple else "is ahead of"
-            print(
-                f"Claude OpenRouter source build {previous_version} {relation} the latest "
-                f"published release ({published}); no registry update needed."
-            )
-            return
+    """Upgrade clr in place and report the version transition."""
+    print("Checking for the latest Claude Router release…")
     command = _upgrade_command()
     result = subprocess.run(command, check=False)
     if result.returncode != 0:
-        raise RuntimeError(f"Claude OpenRouter update exited with status {result.returncode}")
+        raise RuntimeError(f"Claude Router update exited with status {result.returncode}")
     installed_version = _installed_version()
     if installed_version == previous_version:
-        print(f"Claude OpenRouter is already up to date at {installed_version}.")
+        print(f"Claude Router is already up to date at {installed_version}.")
     else:
-        print(f"Updated Claude OpenRouter from {previous_version} to {installed_version}.")
+        print(f"Updated Claude Router from {previous_version} to {installed_version}.")

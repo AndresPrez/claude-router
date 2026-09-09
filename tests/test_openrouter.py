@@ -6,8 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from claude_openrouter.models import ZAI_MODELS
-from claude_openrouter.openrouter import (
+from claude_router.models import ZAI_MODELS
+from claude_router.openrouter import (
     load_catalog,
     refresh_catalog,
     save_catalog,
@@ -15,8 +15,8 @@ from claude_openrouter.openrouter import (
     validate_key_shape,
     write_credential,
 )
-from claude_openrouter.paths import catalog_path, credential_path
-from claude_openrouter.storage import atomic_write_text, read_json_object
+from claude_router.paths import catalog_path, credential_path
+from claude_router.storage import atomic_write_text, read_json_object
 
 KEY = "sk-or-v1-this-is-a-fake-test-key"
 
@@ -54,7 +54,7 @@ def test_validate_and_refresh_use_bearer_and_persist(
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    monkeypatch.setenv("CLAUDE_OPENROUTER_API_BASE", f"http://127.0.0.1:{server.server_port}")
+    monkeypatch.setenv("CLAUDE_ROUTER_API_BASE", f"http://127.0.0.1:{server.server_port}")
     try:
         validate_key(KEY)
         assert refresh_catalog(KEY) == [*sample_models, *ZAI_MODELS]
@@ -87,7 +87,7 @@ def test_load_catalog_without_an_index_returns_exactly_the_zai_models(isolated_h
 
 def test_refresh_catalog_without_a_credential_needs_no_network(isolated_home, monkeypatch) -> None:
     monkeypatch.setattr(
-        "claude_openrouter.openrouter.fetch_models",
+        "claude_router.openrouter.fetch_models",
         lambda _key: (_ for _ in ()).throw(AssertionError("fetch_models must not be called")),
     )
 

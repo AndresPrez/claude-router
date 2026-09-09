@@ -4,8 +4,8 @@ import json
 import subprocess
 from decimal import Decimal
 
-from claude_openrouter import check
-from claude_openrouter.check import PROBE_MARKER, estimate_probe_cost, parse_probe_result
+from claude_router import check
+from claude_router.check import PROBE_MARKER, estimate_probe_cost, parse_probe_result
 
 
 def _event(value: dict[str, object]) -> str:
@@ -38,7 +38,7 @@ def test_parse_probe_result_requires_a_completed_tool_round_trip() -> None:
                             {
                                 "type": "tool_result",
                                 "tool_use_id": "tool-1",
-                                "content": "clor-tool-probe.txt",
+                                "content": "clr-tool-probe.txt",
                             }
                         ]
                     },
@@ -128,4 +128,4 @@ def test_probe_never_consumes_the_calling_shell_input(monkeypatch) -> None:
     check.probe_model({"id": "vendor/model"})
 
     assert captured["stdin"] is subprocess.DEVNULL
-    assert captured["command"][captured["command"].index("--name") + 1] == "clor-tool-check"
+    assert captured["command"][captured["command"].index("--name") + 1] == "clr-tool-check"

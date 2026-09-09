@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from claude_openrouter import launcher
+from claude_router import launcher
 
 
 class Executed(Exception):

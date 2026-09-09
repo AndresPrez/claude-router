@@ -5,18 +5,18 @@ import json
 
 import pytest
 
-from claude_openrouter import cli
-from claude_openrouter.check import ToolProbeResult
-from claude_openrouter.models import ZAI_MODELS
-from claude_openrouter.openrouter import save_catalog, write_credential
-from claude_openrouter.paths import (
+from claude_router import cli
+from claude_router.check import ToolProbeResult
+from claude_router.models import ZAI_MODELS
+from claude_router.openrouter import save_catalog, write_credential
+from claude_router.paths import (
     anthropic_credential_path,
     claude_settings_path,
     credential_path,
     zai_credential_path,
 )
-from claude_openrouter.settings import configure_claude, load_preferences, save_preferences
-from claude_openrouter.zai import write_zai_credential
+from claude_router.settings import configure_claude, load_preferences, save_preferences
+from claude_router.zai import write_zai_credential
 
 KEY = "sk-or-v1-this-is-a-fake-test-key"
 ANTHROPIC_KEY = "sk-ant-this-is-a-fake-test-key"
@@ -145,13 +145,13 @@ def test_check_runs_a_live_probe_without_requiring_a_favorite(
                 acknowledged_result=True,
                 returncode=0,
                 total_cost_usd=0.00125,
-                final_text="CLOR_TOOL_CHECK_OK",
+                final_text="CLR_TOOL_CHECK_OK",
                 diagnostic="",
             )
         ),
     )
 
-    assert cli.main(["check", "clor/openrouter/google/gemini-3.1-pro-preview", "--yes"]) == 0
+    assert cli.main(["check", "clr/openrouter/google/gemini-3.1-pro-preview", "--yes"]) == 0
     assert checked == [sample_models[2]]
     output = capsys.readouterr().out
     assert "Tool round-trip passed" in output
@@ -223,7 +223,7 @@ def test_check_always_allow_is_persistent_and_reversible(
         acknowledged_result=True,
         returncode=0,
         total_cost_usd=0.001,
-        final_text="CLOR_TOOL_CHECK_OK",
+        final_text="CLR_TOOL_CHECK_OK",
         diagnostic="",
     )
     monkeypatch.setattr(cli, "refresh_catalog", lambda: sample_models)
@@ -289,9 +289,7 @@ def test_setup_no_openrouter_configures_zai_only_favorites(
     assert zai_credential_path().read_text().strip() == ZAI_KEY
     assert not credential_path().exists()
     settings = json.loads(claude_settings_path().read_text())
-    assert [row["model"] for row in settings["modelPicker"]["options"]] == [
-        "clor/zai/glm-5.3-flash"
-    ]
+    assert [row["model"] for row in settings["modelPicker"]["options"]] == ["clr/zai/glm-5.3-flash"]
     output = capsys.readouterr().out
     assert "OpenRouter credential:" not in output
     assert f"Z.ai credential: {zai_credential_path()} (mode 0600)" in output
@@ -370,7 +368,7 @@ def test_select_warns_when_tools_are_not_advertised(
     assert cli.main(["select", "qwen/qwen3-coder"]) == 0
     error = capsys.readouterr().err
     assert "do not advertise OpenRouter tool calling" in error
-    assert "clor check qwen/qwen3-coder" in error
+    assert "clr check qwen/qwen3-coder" in error
 
 
 def test_select_rejects_ambiguous_arguments(isolated_home, sample_models, monkeypatch) -> None:

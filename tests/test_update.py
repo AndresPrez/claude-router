@@ -4,10 +4,15 @@ import subprocess
 
 import pytest
 
-from claude_openrouter import update
+from claude_router import update
 
 
-def test_uv_tool_update_reinstalls_latest_unpinned_release(tmp_path, monkeypatch) -> None:
+def test_update_installs_from_github() -> None:
+    assert update.PACKAGE_NAME == "claude-router"
+    assert update.PACKAGE_SOURCE == "git+https://github.com/AndresPrez/claude-router"
+
+
+def test_uv_tool_update_reinstalls_latest_github_main(tmp_path, monkeypatch) -> None:
     tool_root = tmp_path / "uv-tools"
     monkeypatch.setattr(update.sys, "prefix", str(tool_root / update.PACKAGE_NAME))
     monkeypatch.setattr(update.shutil, "which", lambda name: "/bin/uv" if name == "uv" else None)
@@ -22,9 +27,7 @@ def test_uv_tool_update_reinstalls_latest_unpinned_release(tmp_path, monkeypatch
         "copy",
         "--refresh-package",
         update.PACKAGE_NAME,
-        "--default-index",
-        update.DEFAULT_INDEX_URL,
-        update.PACKAGE_NAME,
+        update.PACKAGE_SOURCE,
     ]
 
 
@@ -41,7 +44,7 @@ def test_curl_venv_update_uses_its_own_python(tmp_path, monkeypatch) -> None:
 
     assert command[:4] == [str(interpreter), "-m", "pip", "install"]
     assert "--upgrade" in command
-    assert command[-1] == update.PACKAGE_NAME
+    assert command[-1] == update.PACKAGE_SOURCE
 
 
 def test_pipx_update_stays_with_pipx(tmp_path, monkeypatch) -> None:
@@ -62,8 +65,6 @@ def test_pipx_update_stays_with_pipx(tmp_path, monkeypatch) -> None:
         "/bin/pipx",
         "upgrade",
         update.PACKAGE_NAME,
-        "--index-url",
-        update.DEFAULT_INDEX_URL,
     ]
 
 
@@ -80,78 +81,39 @@ def test_editable_venv_update_is_refused(tmp_path, monkeypatch) -> None:
 @pytest.mark.parametrize(
     ("installed", "expected"),
     [
-        ("9.8.7", "Updated Claude OpenRouter from 1.2.3 to 9.8.7."),
-        ("1.2.3", "Claude OpenRouter is already up to date at 1.2.3."),
+        ("9.8.7", "Updated Claude Router from 1.2.3 to 9.8.7."),
+        ("1.2.3", "Claude Router is already up to date at 1.2.3."),
     ],
 )
 def test_update_reports_before_and_after(installed, expected, monkeypatch, capsys) -> None:
     command = ["package-manager", "upgrade"]
-    monkeypatch.setattr(update, "_source_install_location", lambda: None)
     monkeypatch.setattr(update, "_upgrade_command", lambda: command)
     monkeypatch.setattr(update, "_installed_version", lambda: installed)
     monkeypatch.setattr(
         update.subprocess,
         "run",
-        lambda actual, check: subprocess.CompletedProcess(actual, 0)
-        if actual == command and check is False
-        else (_ for _ in ()).throw(AssertionError(actual)),
+        lambda actual, check: (
+            subprocess.CompletedProcess(actual, 0)
+            if actual == command and check is False
+            else (_ for _ in ()).throw(AssertionError(actual))
+        ),
     )
 
     update.update_installed_package("1.2.3")
 
     output = capsys.readouterr().out
-    assert "Checking for the latest Claude OpenRouter release…" in output
+    assert "Checking for the latest Claude Router release…" in output
     assert output.rstrip().endswith(expected)
 
 
-def test_update_keeps_a_source_install_that_is_ahead_of_pypi(
-    monkeypatch, capsys
-) -> None:
-    monkeypatch.setattr(
-        update,
-        "_source_install_location",
-        lambda: "/work/claude-openrouter",
-    )
-    monkeypatch.setattr(update, "_published_version", lambda: "0.3.0")
-    monkeypatch.setattr(
-        update.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("the package manager must not run")
-        ),
-    )
-
-    update.update_installed_package("0.4.0")
-
-    assert "source build 0.4.0 is ahead of" in capsys.readouterr().out
-
-
-def test_update_refuses_source_install_when_registry_comparison_fails(monkeypatch) -> None:
-    monkeypatch.setattr(
-        update,
-        "_source_install_location",
-        lambda: "/work/claude-openrouter",
-    )
-    monkeypatch.setattr(update, "_published_version", lambda: None)
-
-    with pytest.raises(RuntimeError, match="could not be compared safely"):
-        update.update_installed_package("0.4.0")
-
-
-def test_update_replaces_source_install_when_pypi_is_newer(monkeypatch, capsys) -> None:
+def test_update_reports_a_failed_package_manager_run(monkeypatch) -> None:
     command = ["package-manager", "upgrade"]
-    monkeypatch.setattr(update, "_source_install_location", lambda: "/work/source")
-    monkeypatch.setattr(update, "_published_version", lambda: "0.5.0")
     monkeypatch.setattr(update, "_upgrade_command", lambda: command)
-    monkeypatch.setattr(update, "_installed_version", lambda: "0.5.0")
     monkeypatch.setattr(
         update.subprocess,
         "run",
-        lambda actual, check: subprocess.CompletedProcess(actual, 0)
-        if actual == command and check is False
-        else (_ for _ in ()).throw(AssertionError(actual)),
+        lambda actual, check: subprocess.CompletedProcess(actual, 3),
     )
 
-    update.update_installed_package("0.4.0")
-
-    assert "Updated Claude OpenRouter from 0.4.0 to 0.5.0." in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match="exited with status 3"):
+        update.update_installed_package("1.2.3")

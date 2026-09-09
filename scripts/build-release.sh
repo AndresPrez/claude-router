@@ -11,5 +11,4 @@ uv build --clear --directory "$repo_dir"
 )
 
 echo "Built release artifacts in $repo_dir/dist"
-echo "Copy the wheel digest into install.sh before publishing."
 

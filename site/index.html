@@ -4,28 +4,28 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="theme-color" content="#0d0f0e">
-    <meta name="description" content="Use OpenRouter models in Claude Code while keeping native login and connectors.">
+    <meta name="description" content="Use Z.ai GLM and OpenRouter models inside Claude Code next to your native Claude login.">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="Claude OpenRouter">
-    <meta property="og:description" content="A small CLI that connects Claude Code to OpenRouter.">
-    <meta property="og:url" content="https://xhluca.github.io/claude-openrouter/">
-    <link rel="canonical" href="https://xhluca.github.io/claude-openrouter/">
+    <meta property="og:title" content="Claude Router">
+    <meta property="og:description" content="Use Z.ai GLM and OpenRouter models inside Claude Code next to your native Claude login.">
+    <meta property="og:url" content="https://andresperez.github.io/claude-router/">
+    <link rel="canonical" href="https://andresperez.github.io/claude-router/">
     <link rel="stylesheet" href="assets/asciinema-player.css?v=1">
     <link rel="stylesheet" href="assets/site.css?v=3">
-    <title>Claude OpenRouter — OpenRouter models in Claude Code</title>
+    <title>Claude Router — Z.ai and OpenRouter models in Claude Code</title>
   </head>
   <body>
     <div class="page">
       <header>
-        <a class="name" href="./">Claude OpenRouter</a>
+        <a class="name" href="./">Claude Router</a>
         <nav aria-label="Project links">
-          <a href="https://github.com/xhluca/claude-openrouter">GitHub</a>
-          <a href="https://pypi.org/project/claude-openrouter/">PyPI</a>
+          <a href="https://github.com/AndresPrez/claude-router">GitHub</a>
+          <a href="https://github.com/AndresPrez/claude-router/issues">Issues</a>
         </nav>
       </header>
 
       <main>
-        <p class="label">OpenRouter models in Claude Code</p>
+        <p class="label">Z.ai and OpenRouter models in Claude Code</p>
         <h1>Your models. Claude's picker.</h1>
         <p class="intro">
           Add OpenRouter favorites beside Claude's built-in models in the
@@ -34,11 +34,11 @@
         </p>
 
         <div class="install" aria-label="Installation command">
-          <code id="install-command">curl -LsSf https://xhluca.github.io/claude-openrouter/install.sh | sh</code>
+          <code id="install-command">curl -LsSf https://andresperez.github.io/claude-router/install.sh | sh</code>
           <button type="button" data-copy="install-command" aria-label="Copy install command">Copy</button>
         </div>
 
-        <figure class="demo" aria-label="Interactive Claude OpenRouter terminal demo">
+        <figure class="demo" aria-label="Interactive Claude Router terminal demo">
           <div class="demo-topbar">
             <span class="demo-label"><i></i> Interactive terminal</span>
             <div class="demo-controls" aria-label="Demo playback controls">
@@ -53,7 +53,7 @@
               <a href="assets/demo.cast?v=8">Open the terminal recording</a>
             </div>
             <noscript>
-              <img src="assets/demo.gif?v=8" alt="Installing Claude OpenRouter, entering a masked API key, selecting GLM-5.3 interactively, and receiving a live Claude Code response">
+              <img src="assets/demo.gif?v=8" alt="Installing Claude Router, entering a masked API key, selecting GLM-5.3 interactively, and receiving a live Claude Code response">
             </noscript>
           </div>
           <figcaption>
@@ -65,8 +65,8 @@
         </figure>
 
         <p class="usage">
-          Run <code>clor search</code> to search the live catalog,
-          <code>clor select</code> to choose favorites, and
+          Run <code>clr search</code> to search the live catalog,
+          <code>clr select</code> to choose favorites, and
           plain <code>claude</code> to start. The same configuration works with
           <code>claude --agent</code>, background agents, and the
           <code>claude agents</code> view.
@@ -76,7 +76,7 @@
           A fail-closed loopback router keeps provider credentials separate:
           Claude models go only to Anthropic, and labeled OpenRouter favorites
           go only to OpenRouter. Secret-bearing files stay local with mode 0600.
-          Reset everything with <code>clor reset</code>.
+          Reset everything with <code>clr reset</code>.
         </div>
       </main>
 

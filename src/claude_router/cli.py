@@ -1,4 +1,4 @@
-"""Command-line interface for Claude OpenRouter."""
+"""Command-line interface for Claude Router."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def _styled(value: object, code: str, *, stream: Any | None = None) -> str:
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
-        prog="claude-openrouter",
+        prog="claude-router",
         description="Route native Claude, OpenRouter, and Z.ai models safely.",
     )
     root.add_argument("--version", action="version", version=__version__)
@@ -210,7 +210,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "update",
         aliases=["upgrade"],
-        help="install the latest Claude OpenRouter release",
+        help="install the latest Claude Router release",
     )
     claude = commands.add_parser(
         "claude",
@@ -391,7 +391,7 @@ def _warn_selected_tool_support(models: list[dict[str, Any]]) -> None:
     )
     print(
         "They may still chat, but Claude Code agent actions can fail. "
-        f"Run `clor check {unsupported[0]}` for a live tool round-trip.",
+        f"Run `clr check {unsupported[0]}` for a live tool round-trip.",
         file=sys.stderr,
     )
 
@@ -463,7 +463,7 @@ def _confirm_billable_check(model: dict[str, Any], *, assume_yes: bool) -> bool:
             set_check_confirmation(False)
             print(
                 "Future checks will not ask. Restore prompts with "
-                "`clor config --check-confirmation ask`."
+                "`clr config --check-confirmation ask`."
             )
             return True
         if answer in {"", "n", "no"}:
@@ -568,7 +568,7 @@ def command_setup(
     service = start_service(port)
     assert_private_files()
     _warn_claude_compatibility()
-    print(_styled("✓ Claude OpenRouter is ready", "1;32"))
+    print(_styled("✓ Claude Router is ready", "1;32"))
     print()
     if credential_path().exists():
         print(
@@ -845,11 +845,11 @@ def command_doctor(*, as_json: bool) -> int:
 def command_uninstall() -> int:
     command_reset()
     if remove_installed_package():
-        print("Uninstalled claude-openrouter.")
+        print("Uninstalled claude-router.")
     else:
         print(
             "Integration reset, but this install is not managed by uv or the curl installer. "
-            "Remove claude-openrouter with the package manager that installed it.",
+            "Remove claude-router with the package manager that installed it.",
             file=sys.stderr,
         )
     return 0

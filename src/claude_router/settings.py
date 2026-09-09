@@ -40,7 +40,7 @@ LEGACY_ENV_FIELDS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_
 VERSION_2_ENV_FIELDS = (*LEGACY_ENV_FIELDS, "ANTHROPIC_CUSTOM_HEADERS")
 ENV_FIELDS = (*VERSION_2_ENV_FIELDS, "ENABLE_TOOL_SEARCH")
 BACKUP_VERSION = 4
-LOCAL_TOKEN_HEADER = "X-Claude-OpenRouter-Token"
+LOCAL_TOKEN_HEADER = "X-Claude-Router-Token"
 CHECK_CONFIRMATION_FIELD = "confirm_billable_checks"
 
 
@@ -56,7 +56,7 @@ def _capture_backup(settings: dict[str, Any], existed: bool) -> None:
         backup = read_json_object(path)
         if backup.get("settings_path") != str(claude_settings_path()):
             raise RuntimeError(
-                "an existing claude-openrouter backup belongs to a different "
+                "an existing claude-router backup belongs to a different "
                 "CLAUDE_CONFIG_DIR; reset it from that environment first"
             )
         if backup.get("version") == 3:
@@ -278,7 +278,7 @@ def configure_claude(
     needs_zai_key = any(model.get("provider") == "zai" for model in models)
     if needs_zai_key and not zai_credential_path().exists():
         raise RuntimeError(
-            "Z.ai favorites require a configured Z.ai key; run `clor config --zai-key`"
+            "Z.ai favorites require a configured Z.ai key; run `clr config --zai-key`"
         )
     if not _active_backup():
         migrate_legacy_settings()
@@ -363,7 +363,7 @@ def _looks_managed_picker(value: Any) -> bool:
         return False
     options = value.get("options")
     return isinstance(options, list) and any(
-        isinstance(row, dict) and "via claude-openrouter" in str(row.get("description", ""))
+        isinstance(row, dict) and "via claude-router" in str(row.get("description", ""))
         for row in options
     )
 

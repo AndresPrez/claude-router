@@ -3,7 +3,7 @@ from __future__ import annotations
 import curses
 from typing import Any
 
-from claude_openrouter import picker
+from claude_router import picker
 
 
 class FakeScreen:

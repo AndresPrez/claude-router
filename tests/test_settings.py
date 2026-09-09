@@ -6,9 +6,9 @@ import stat
 import pytest
 from conftest import write_json
 
-from claude_openrouter.models import ZAI_MODELS
-from claude_openrouter.openrouter import write_credential
-from claude_openrouter.paths import (
+from claude_router.models import ZAI_MODELS
+from claude_router.openrouter import write_credential
+from claude_router.paths import (
     agent_manifest_path,
     backup_path,
     claude_agents_dir,
@@ -18,7 +18,7 @@ from claude_openrouter.paths import (
     launch_settings_path,
     router_token_path,
 )
-from claude_openrouter.settings import (
+from claude_router.settings import (
     BASE_URL,
     _looks_managed_picker,
     configure_claude,
@@ -31,7 +31,7 @@ from claude_openrouter.settings import (
     set_check_confirmation,
     write_key_helper,
 )
-from claude_openrouter.zai import write_zai_credential
+from claude_router.zai import write_zai_credential
 
 KEY = "sk-or-v1-this-is-a-fake-test-key"
 NEW_KEY = "sk-or-v1-this-is-a-new-fake-test-key"
@@ -107,23 +107,23 @@ def test_configure_with_zai_favorite_requires_a_zai_credential_and_namespaces_th
     settings = read_json(claude_settings_path())
     rows = settings["modelPicker"]["options"]
     assert [row["model"] for row in rows] == [
-        "clor/openrouter/google/gemini-3.1-pro-preview",
-        "clor/zai/glm-5.3-flash",
+        "clr/openrouter/google/gemini-3.1-pro-preview",
+        "clr/zai/glm-5.3-flash",
     ]
     zai_row = rows[-1]
     assert zai_row["label"] == "GLM-5.3 Flash · Z.ai"
-    assert "Z.ai Coding Plan via claude-openrouter" in zai_row["description"]
+    assert "Z.ai Coding Plan via claude-router" in zai_row["description"]
     assert "$" not in zai_row["description"]
-    assert len(list(claude_agents_dir().glob("clor-*.md"))) == 2
+    assert len(list(claude_agents_dir().glob("clr-*.md"))) == 2
 
 
 def test_managed_picker_detection_covers_zai_rows(isolated_home) -> None:
     zai_picker = {
         "options": [
             {
-                "model": "clor/zai/glm-5.3-flash",
+                "model": "clr/zai/glm-5.3-flash",
                 "description": (
-                    "glm-5.3-flash · Z.ai Coding Plan via claude-openrouter · "
+                    "glm-5.3-flash · Z.ai Coding Plan via claude-router · "
                     "tools ✓ · tool choice ✓ · 1M context"
                 ),
             }
@@ -167,7 +167,7 @@ def test_configure_makes_plain_claude_use_openrouter_and_preserves_native_auth(
     assert result == claude_settings_path()
     settings = read_json(claude_settings_path())
     assert settings["theme"] == "dark"
-    assert settings["model"] == "clor/openrouter/google/gemini-3.1-pro-preview"
+    assert settings["model"] == "clr/openrouter/google/gemini-3.1-pro-preview"
     assert "apiKeyHelper" not in settings
     assert settings["env"] == {
         "KEEP": "yes",
@@ -175,18 +175,18 @@ def test_configure_makes_plain_claude_use_openrouter_and_preserves_native_auth(
         "ANTHROPIC_API_KEY": "",
         "ANTHROPIC_AUTH_TOKEN": "",
         "ANTHROPIC_CUSTOM_HEADERS": (
-            f"X-Trace: yes\nX-Claude-OpenRouter-Token: {router_token_path().read_text().strip()}"
+            f"X-Trace: yes\nX-Claude-Router-Token: {router_token_path().read_text().strip()}"
         ),
         "ENABLE_TOOL_SEARCH": "false",
     }
     assert settings["modelPicker"]["replaceBuiltInOptions"] is False
     assert [row["model"] for row in settings["modelPicker"]["options"]] == [
-        "clor/openrouter/google/gemini-3.1-pro-preview",
-        "clor/openrouter/qwen/qwen3-coder",
+        "clr/openrouter/google/gemini-3.1-pro-preview",
+        "clr/openrouter/qwen/qwen3-coder",
     ]
     pre_tool_use = settings["hooks"]["PreToolUse"]
     assert any(group.get("matcher") == "Agent" for group in pre_tool_use)
-    assert len(list(claude_agents_dir().glob("clor-*.md"))) == 2
+    assert len(list(claude_agents_dir().glob("clr-*.md"))) == 2
     assert agent_manifest_path().exists()
     assert stat.S_IMODE(claude_settings_path().stat().st_mode) == 0o600
     assert read_json(backup_path())["version"] == 4
@@ -216,7 +216,7 @@ def test_reconfigure_keeps_original_backup_and_does_not_duplicate_authorization(
     assert backup_path().read_text() == backup
     headers = read_json(claude_settings_path())["env"]["ANTHROPIC_CUSTOM_HEADERS"]
     assert headers == (
-        f"X-Trace: yes\nX-Claude-OpenRouter-Token: {router_token_path().read_text().strip()}"
+        f"X-Trace: yes\nX-Claude-Router-Token: {router_token_path().read_text().strip()}"
     )
 
     reset_integration()
@@ -235,13 +235,13 @@ def test_router_startup_upgrades_v3_backup_before_adding_subagent_hook(
     }
     current = {
         **original,
-        "model": "clor/openrouter/google/gemini-3.1-pro-preview",
+        "model": "clr/openrouter/google/gemini-3.1-pro-preview",
         "modelPicker": {
             "replaceBuiltInOptions": False,
             "options": [
                 {
-                    "model": "clor/openrouter/google/gemini-3.1-pro-preview",
-                    "description": "OpenRouter via claude-openrouter",
+                    "model": "clr/openrouter/google/gemini-3.1-pro-preview",
+                    "description": "OpenRouter via claude-router",
                 }
             ],
         },
@@ -249,7 +249,7 @@ def test_router_startup_upgrades_v3_backup_before_adding_subagent_hook(
             "ANTHROPIC_BASE_URL": BASE_URL,
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_AUTH_TOKEN": "",
-            "ANTHROPIC_CUSTOM_HEADERS": "X-Claude-OpenRouter-Token: old",
+            "ANTHROPIC_CUSTOM_HEADERS": "X-Claude-Router-Token: old",
             "ENABLE_TOOL_SEARCH": "false",
         },
     }
@@ -300,7 +300,7 @@ def test_config_updates_the_persistent_authorization_header(isolated_home, sampl
     assert refresh_claude_credential(NEW_KEY) is True
     settings = read_json(claude_settings_path())
     assert settings["env"]["ANTHROPIC_CUSTOM_HEADERS"] == (
-        f"X-Claude-OpenRouter-Token: {router_token_path().read_text().strip()}"
+        f"X-Claude-Router-Token: {router_token_path().read_text().strip()}"
     )
     assert KEY not in settings["env"]["ANTHROPIC_CUSTOM_HEADERS"]
     assert NEW_KEY not in settings["env"]["ANTHROPIC_CUSTOM_HEADERS"]
@@ -318,7 +318,7 @@ def test_configure_without_native_login_uses_token_fallback(isolated_home, sampl
     env = read_json(claude_settings_path())["env"]
     token = router_token_path().read_text().strip()
     assert env["ANTHROPIC_AUTH_TOKEN"] == token
-    assert env["ANTHROPIC_CUSTOM_HEADERS"] == (f"X-Trace: yes\nX-Claude-OpenRouter-Token: {token}")
+    assert env["ANTHROPIC_CUSTOM_HEADERS"] == (f"X-Trace: yes\nX-Claude-Router-Token: {token}")
 
     assert refresh_claude_credential(NEW_KEY) is True
     assert read_json(claude_settings_path())["env"]["ANTHROPIC_AUTH_TOKEN"] == token
@@ -344,7 +344,7 @@ def test_configure_migrates_legacy_global_settings_from_backup(
             "options": [
                 {
                     "model": sample_models[0]["id"],
-                    "description": "OpenRouter via claude-openrouter",
+                    "description": "OpenRouter via claude-router",
                 }
             ],
         },
@@ -372,7 +372,7 @@ def test_configure_migrates_legacy_global_settings_from_backup(
         "ANTHROPIC_API_KEY": "",
         "ANTHROPIC_AUTH_TOKEN": "",
         "ANTHROPIC_CUSTOM_HEADERS": (
-            f"X-Claude-OpenRouter-Token: {router_token_path().read_text().strip()}"
+            f"X-Claude-Router-Token: {router_token_path().read_text().strip()}"
         ),
         "ENABLE_TOOL_SEARCH": "false",
     }
@@ -403,7 +403,7 @@ def test_configure_cleans_recognizable_legacy_settings_without_backup(
             "options": [
                 {
                     "model": sample_models[0]["id"],
-                    "description": "OpenRouter via claude-openrouter",
+                    "description": "OpenRouter via claude-router",
                 }
             ],
         },
@@ -427,7 +427,7 @@ def test_configure_cleans_recognizable_legacy_settings_without_backup(
         "ANTHROPIC_API_KEY": "",
         "ANTHROPIC_AUTH_TOKEN": "",
         "ANTHROPIC_CUSTOM_HEADERS": (
-            f"X-Claude-OpenRouter-Token: {router_token_path().read_text().strip()}"
+            f"X-Claude-Router-Token: {router_token_path().read_text().strip()}"
         ),
         "ENABLE_TOOL_SEARCH": "false",
     }

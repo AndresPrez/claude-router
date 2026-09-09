@@ -8,8 +8,8 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-OPENROUTER_MODEL_PREFIX = "clor/openrouter/"
-ZAI_MODEL_PREFIX = "clor/zai/"
+OPENROUTER_MODEL_PREFIX = "clr/openrouter/"
+ZAI_MODEL_PREFIX = "clr/zai/"
 
 # Static Z.ai Coding Plan catalog. OpenRouter model ids always contain a
 # slash, so these slash-free GLM ids can never collide with that namespace.
@@ -270,7 +270,7 @@ def picker_description(model: dict[str, Any]) -> str:
     zai = provider_of(str(model.get("id", ""))) == "zai"
     parts = [
         str(model.get("id", "")),
-        "Z.ai Coding Plan via claude-openrouter" if zai else "OpenRouter via claude-openrouter",
+        "Z.ai Coding Plan via claude-router" if zai else "OpenRouter via claude-router",
         tool_capability_badge(model, detailed=True),
     ]
     context = model.get("context_length")

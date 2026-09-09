@@ -32,7 +32,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9417
 ANTHROPIC_UPSTREAM = "https://api.anthropic.com"
 OPENROUTER_UPSTREAM = "https://openrouter.ai/api"
-LOCAL_TOKEN_HEADER = "X-Claude-OpenRouter-Token"
+LOCAL_TOKEN_HEADER = "X-Claude-Router-Token"
 MAX_BODY_BYTES = 128 * 1024 * 1024
 ALLOWED_PATHS = {"/v1/messages", "/v1/messages/count_tokens"}
 HOP_BY_HOP = {
@@ -63,7 +63,7 @@ def _vision_hint(favorites: set[str], model_modalities: dict[str, frozenset[str]
 
 def _capability_notice(model: str, vision_hint: str) -> str:
     return (
-        "Claude OpenRouter capability notice: the selected model "
+        "Claude Router capability notice: the selected model "
         f"{model} is text-only; OpenRouter's catalog does not list image as an input "
         "modality. You cannot inspect image pixels with this model. Do not claim that "
         "you viewed an image or repeatedly call a tool to read one. If the user asks "
@@ -158,6 +158,13 @@ def _repair_itemless_arrays(value: Any) -> int:
         value["items"] = {"type": "string"}
         repaired += 1
     return repaired + sum(_repair_itemless_arrays(item) for item in value.values())
+
+
+def _repair_gemini_tool_schemas(payload: dict[str, Any]) -> int:
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return 0
+    return _repair_itemless_arrays(tools)
 
 
 def _repair_gemini_tool_schemas(payload: dict[str, Any]) -> int:
@@ -281,12 +288,12 @@ def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
     if bare_model is not None:
         if route_of_namespaced(model) == "zai":
             if bare_model not in favorites:
-                raise ValueError("Z.ai model is not in the clor favorites allowlist")
+                raise ValueError("Z.ai model is not in the clr favorites allowlist")
             return "zai", bare_model
         if not hybrid_openrouter_allowed(bare_model):
             raise ValueError("Anthropic and automatic models are blocked on the OpenRouter route")
         if bare_model not in favorites:
-            raise ValueError("OpenRouter model is not in the clor favorites allowlist")
+            raise ValueError("OpenRouter model is not in the clr favorites allowlist")
         return "openrouter", bare_model
     if model in {"default", "opus", "sonnet", "haiku"} or model.startswith("claude-"):
         return "anthropic", model
@@ -334,7 +341,7 @@ def _target(upstream: str) -> tuple[type[http.client.HTTPConnection], str, int |
 
 class HybridRouterHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "ClaudeOpenRouter"
+    server_version = "ClaudeRouter"
 
     @property
     def router(self) -> HybridRouterServer:
@@ -422,8 +429,8 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         headers.setdefault("Content-Type", "application/json")
         if route == "openrouter":
             headers["Authorization"] = f"Bearer {read_credential()}"
-            headers["HTTP-Referer"] = "https://github.com/xhluca/claude-openrouter"
-            headers["X-Title"] = "Claude OpenRouter"
+            headers["HTTP-Referer"] = "https://github.com/AndresPrez/claude-router"
+            headers["X-Title"] = "Claude Router"
         elif route == "zai":
             headers["Authorization"] = f"Bearer {read_zai_credential()}"
         elif self.router.anthropic_auth == "api":
@@ -583,8 +590,8 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     favorites = favorite_ids()
     catalog = load_catalog()
     # The newly installed router is the first new-version process started by
-    # ``clor update``. Refreshing here upgrades existing 0.4.x installations
-    # without requiring users to rerun setup or select.
+    # ``clr update``. Refreshing here upgrades installations from older
+    # releases without requiring users to rerun setup or select.
     refresh_managed_subagents(exact_models(catalog, favorites))
     server = HybridRouterServer(
         (host, port),

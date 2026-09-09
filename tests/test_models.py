@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from claude_openrouter.models import (
+from claude_router.models import (
     ZAI_MODEL_IDS,
     ZAI_MODELS,
     catalog_input_modalities,
@@ -73,7 +73,7 @@ def test_picker_row_has_human_metadata_and_management_marker(sample_models) -> N
     row = picker_row(sample_models[0])
     assert row["model"] == "anthropic/claude-sonnet-4.6"
     assert row["label"] == "Claude Sonnet 4.6"
-    assert "OpenRouter via claude-openrouter" in row["description"]
+    assert "OpenRouter via claude-router" in row["description"]
     assert "$3/M input" in row["description"]
     assert "tools ?" in row["description"]
 
@@ -143,28 +143,28 @@ def test_zai_catalog_is_static_text_only_and_tool_capable() -> None:
 def test_provider_of_and_namespacing_round_trip() -> None:
     assert provider_of("glm-5.3-flash") == "zai"
     assert provider_of("z-ai/glm-5.3-flash") == "openrouter"
-    assert namespaced_model("glm-5.3-flash") == "clor/zai/glm-5.3-flash"
-    assert namespaced_model("z-ai/glm-5.3-flash") == "clor/openrouter/z-ai/glm-5.3-flash"
-    assert original_model("clor/zai/glm-5.3-flash") == "glm-5.3-flash"
-    assert original_model("clor/openrouter/z-ai/glm-5.3-flash") == "z-ai/glm-5.3-flash"
+    assert namespaced_model("glm-5.3-flash") == "clr/zai/glm-5.3-flash"
+    assert namespaced_model("z-ai/glm-5.3-flash") == "clr/openrouter/z-ai/glm-5.3-flash"
+    assert original_model("clr/zai/glm-5.3-flash") == "glm-5.3-flash"
+    assert original_model("clr/openrouter/z-ai/glm-5.3-flash") == "z-ai/glm-5.3-flash"
     assert original_model("claude-opus-4-8") is None
-    assert original_model("clor/zai/") is None
+    assert original_model("clr/zai/") is None
 
 
 def test_route_of_namespaced_distinguishes_prefixes() -> None:
-    assert route_of_namespaced("clor/zai/glm-5.3") == "zai"
-    assert route_of_namespaced("clor/openrouter/z-ai/glm-5.3") == "openrouter"
+    assert route_of_namespaced("clr/zai/glm-5.3") == "zai"
+    assert route_of_namespaced("clr/openrouter/z-ai/glm-5.3") == "openrouter"
     assert route_of_namespaced("glm-5.3") is None
-    assert route_of_namespaced("clor/other/glm-5.3") is None
+    assert route_of_namespaced("clr/other/glm-5.3") is None
 
 
 def test_zai_picker_row_labels_and_describe_the_coding_plan_without_pricing() -> None:
     glm = next(model for model in ZAI_MODELS if model["id"] == "glm-5.3-flash")
     row = picker_row(glm, hybrid=True)
 
-    assert row["model"] == "clor/zai/glm-5.3-flash"
+    assert row["model"] == "clr/zai/glm-5.3-flash"
     assert row["label"] == "GLM-5.3 Flash · Z.ai"
-    assert "Z.ai Coding Plan via claude-openrouter" in row["description"]
+    assert "Z.ai Coding Plan via claude-router" in row["description"]
     assert "$" not in row["description"]
     assert "1000K context" in row["description"]
 
