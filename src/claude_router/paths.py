@@ -48,6 +48,10 @@ def zai_credential_path() -> Path:
     return config_dir() / "zai-credential"
 
 
+def cursor_credential_path() -> Path:
+    return config_dir() / "cursor-credential"
+
+
 def router_token_path() -> Path:
     return config_dir() / "router-token"
 

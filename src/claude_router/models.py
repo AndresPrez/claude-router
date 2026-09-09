@@ -10,6 +10,7 @@ from typing import Any
 
 OPENROUTER_MODEL_PREFIX = "clr/openrouter/"
 ZAI_MODEL_PREFIX = "clr/zai/"
+CURSOR_MODEL_PREFIX = "clr/cursor/"
 
 # Static Z.ai Coding Plan catalog. OpenRouter model ids always contain a
 # slash, so these slash-free GLM ids can never collide with that namespace.
@@ -71,10 +72,57 @@ ZAI_MODELS: list[dict[str, Any]] = [
 ]
 ZAI_MODEL_IDS = frozenset(m["id"] for m in ZAI_MODELS)
 
+# Static Cursor Cloud Agents catalog. Model ids must match GET /v1/models on
+# api.cursor.com. Runs are agent tasks, so these entries honestly advertise
+# no Messages-API tool support.
+CURSOR_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "composer-2.5",
+        "name": "Composer 2.5",
+        "description": "Cursor's in-house frontier coding model",
+        "provider": "cursor",
+        "context_length": 1_000_000,
+        "supported_parameters": [],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "gpt-5.3-codex",
+        "name": "Codex 5.3",
+        "description": "OpenAI Codex 5.3 on Cursor Cloud Agents",
+        "provider": "cursor",
+        "context_length": 1_000_000,
+        "supported_parameters": [],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "cursor-grok-4.6-high",
+        "name": "Cursor Grok 4.6",
+        "description": "Grok 4.6 tuned by Cursor for coding",
+        "provider": "cursor",
+        "context_length": 1_000_000,
+        "supported_parameters": [],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "gemini-3.7-flash-high",
+        "name": "Gemini 3.7 Flash",
+        "description": "Fast Gemini 3.7 Flash on Cursor Cloud Agents",
+        "provider": "cursor",
+        "context_length": 1_000_000,
+        "supported_parameters": [],
+        "architecture": {"input_modalities": ["text"]},
+    },
+]
+CURSOR_MODEL_IDS = frozenset(m["id"] for m in CURSOR_MODELS)
+
 
 def provider_of(model_id: str) -> str:
     """Return which route serves a bare catalog model id."""
-    return "zai" if model_id in ZAI_MODEL_IDS else "openrouter"
+    if model_id in ZAI_MODEL_IDS:
+        return "zai"
+    if model_id in CURSOR_MODEL_IDS:
+        return "cursor"
+    return "openrouter"
 
 
 def supported_parameters(model: dict[str, Any]) -> frozenset[str] | None:
@@ -135,12 +183,16 @@ def catalog_input_modalities(
 
 
 def namespaced_model(model_id: str) -> str:
-    prefix = ZAI_MODEL_PREFIX if provider_of(model_id) == "zai" else OPENROUTER_MODEL_PREFIX
+    provider = provider_of(model_id)
+    prefix = {
+        "zai": ZAI_MODEL_PREFIX,
+        "cursor": CURSOR_MODEL_PREFIX,
+    }.get(provider, OPENROUTER_MODEL_PREFIX)
     return f"{prefix}{model_id}"
 
 
 def original_model(model_id: str) -> str | None:
-    for prefix in (ZAI_MODEL_PREFIX, OPENROUTER_MODEL_PREFIX):
+    for prefix in (ZAI_MODEL_PREFIX, OPENROUTER_MODEL_PREFIX, CURSOR_MODEL_PREFIX):
         if model_id.startswith(prefix):
             original = model_id[len(prefix) :]
             return original or None
@@ -153,6 +205,8 @@ def route_of_namespaced(model_id: str) -> str | None:
         return "zai"
     if model_id.startswith(OPENROUTER_MODEL_PREFIX):
         return "openrouter"
+    if model_id.startswith(CURSOR_MODEL_PREFIX):
+        return "cursor"
     return None
 
 
@@ -267,16 +321,20 @@ def _price_per_million(value: Any) -> str | None:
 
 
 def picker_description(model: dict[str, Any]) -> str:
-    zai = provider_of(str(model.get("id", ""))) == "zai"
+    provider = provider_of(str(model.get("id", "")))
+    via = {
+        "zai": "Z.ai Coding Plan via claude-router",
+        "cursor": "Cursor Cloud Agents via claude-router",
+    }.get(provider, "OpenRouter via claude-router")
     parts = [
         str(model.get("id", "")),
-        "Z.ai Coding Plan via claude-router" if zai else "OpenRouter via claude-router",
+        via,
         tool_capability_badge(model, detailed=True),
     ]
     context = model.get("context_length")
     if isinstance(context, int) and context > 0:
         parts.append(f"{context // 1000}K context" if context >= 1000 else f"{context} context")
-    if not zai:
+    if provider == "openrouter":
         pricing = model.get("pricing")
         if isinstance(pricing, dict):
             prompt = _price_per_million(pricing.get("prompt"))
@@ -290,7 +348,10 @@ def picker_row(model: dict[str, Any], *, hybrid: bool = False) -> dict[str, str]
     model_id = str(model["id"])
     name = model.get("name")
     label = name if isinstance(name, str) and name else model_id
-    suffix = " · Z.ai" if provider_of(model_id) == "zai" else " · OpenRouter"
+    suffix = {
+        "zai": " · Z.ai",
+        "cursor": " · Cursor",
+    }.get(provider_of(model_id), " · OpenRouter")
     return {
         "model": namespaced_model(model_id) if hybrid else model_id,
         "label": f"{label}{suffix}" if hybrid else label,

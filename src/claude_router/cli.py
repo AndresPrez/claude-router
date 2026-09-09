@@ -28,6 +28,13 @@ from .check import (
     estimate_probe_cost,
     probe_model,
 )
+from .cursor import (
+    read_cursor_credential,
+    write_cursor_credential,
+)
+from .cursor import (
+    validate_cursor_key_shape as _validate_cursor_key_shape,
+)
 from .launcher import has_native_login, launch_claude
 from .models import (
     exact_models,
@@ -53,6 +60,7 @@ from .paths import (
     catalog_path,
     claude_settings_path,
     credential_path,
+    cursor_credential_path,
     zai_credential_path,
 )
 from .picker import choose_models
@@ -193,6 +201,16 @@ def parser() -> argparse.ArgumentParser:
         help="read and store a Z.ai API key from stdin",
     )
     config.add_argument(
+        "--cursor-key",
+        action="store_true",
+        help="prompt to store a Cursor API key for Cloud Agents models",
+    )
+    config.add_argument(
+        "--cursor-key-stdin",
+        action="store_true",
+        help="read and store a Cursor API key from stdin",
+    )
+    config.add_argument(
         "--check-confirmation",
         choices=("ask", "never"),
         help="ask before billable model checks, or never ask",
@@ -330,6 +348,21 @@ def _read_zai_key(*, from_stdin: bool) -> str:
             return existing
         key = _masked_input("Z.ai API key: ").strip()
     validate_zai_key_shape(key)
+    return key
+
+
+def _read_cursor_key(*, from_stdin: bool) -> str:
+    if from_stdin:
+        key = sys.stdin.readline().strip()
+    else:
+        try:
+            existing = read_cursor_credential()
+        except RuntimeError:
+            existing = None
+        if existing and _confirm_key_reuse(cursor_credential_path(), "Cursor API key"):
+            return existing
+        key = _masked_input("Cursor API key: ").strip()
+    _validate_cursor_key_shape(key)
     return key
 
 
@@ -663,6 +696,8 @@ def command_config(
     anthropic_key_stdin: bool,
     zai_key: bool,
     zai_key_stdin: bool,
+    cursor_key: bool,
+    cursor_key_stdin: bool,
     check_confirmation: str | None,
 ) -> int:
     if check_confirmation is not None:
@@ -690,6 +725,24 @@ def command_config(
         write_zai_credential(_read_zai_key(from_stdin=zai_key_stdin))
         assert_private_files()
         print(f"Z.ai credential updated: {zai_credential_path()} (mode 0600)")
+        return 0
+    if cursor_key or cursor_key_stdin:
+        if (
+            key_stdin
+            or no_validate
+            or anthropic_auth is not None
+            or anthropic_key_stdin
+            or zai_key
+            or zai_key_stdin
+        ):
+            raise ValueError(
+                "configure Cursor and OpenRouter/Anthropic/Z.ai credentials in separate commands"
+            )
+        if cursor_key and cursor_key_stdin:
+            raise ValueError("use --cursor-key or --cursor-key-stdin, not both")
+        write_cursor_credential(_read_cursor_key(from_stdin=cursor_key_stdin))
+        assert_private_files()
+        print(f"Cursor credential updated: {cursor_credential_path()} (mode 0600)")
         return 0
     if key_stdin and (anthropic_auth is not None or anthropic_key_stdin):
         raise ValueError("configure OpenRouter and Anthropic credentials in separate commands")
@@ -898,6 +951,8 @@ def main(argv: list[str] | None = None) -> int:
                 anthropic_key_stdin=args.anthropic_key_stdin,
                 zai_key=args.zai_key,
                 zai_key_stdin=args.zai_key_stdin,
+                cursor_key=args.cursor_key,
+                cursor_key_stdin=args.cursor_key_stdin,
                 check_confirmation=args.check_confirmation,
             )
         if args.command == "doctor":
