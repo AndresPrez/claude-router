@@ -14,6 +14,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .anthropic import read_anthropic_credential
+from .cursor import CursorBridgeError, error_frame, flatten_conversation, run_turn, sse_frames
 from .models import (
     OPENROUTER_MODEL_PREFIX,
     catalog_input_modalities,
@@ -311,6 +312,10 @@ def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
             if bare_model not in favorites:
                 raise ValueError("Z.ai model is not in the clr favorites allowlist")
             return "zai", bare_model
+        if route_of_namespaced(model) == "cursor":
+            if bare_model not in favorites:
+                raise ValueError("Cursor model is not in the clr favorites allowlist")
+            return "cursor", bare_model
         if not hybrid_openrouter_allowed(bare_model):
             raise ValueError("Anthropic and automatic models are blocked on the OpenRouter route")
         if bare_model not in favorites:
@@ -336,7 +341,7 @@ def route_payload(
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), str):
         raise ValueError("request body must contain a string model")
     route, upstream_model = classify_model(payload["model"], favorites)
-    if route in {"openrouter", "zai"}:
+    if route in {"openrouter", "zai", "cursor"}:
         payload["model"] = upstream_model
         if route == "openrouter" and upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
             _repair_gemini_tool_schemas(payload)
@@ -404,6 +409,10 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             route, model, body = route_payload(
                 body, self.router.favorites, self.router.model_modalities
             )
+            if route == "cursor":
+                self._serve_cursor(model, body)
+                self._record_status("cursor", model, None)
+                return
             if route == "openrouter":
                 upstream = self.router.openrouter_upstream
             elif route == "zai":
@@ -528,6 +537,35 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         if buffer:
             self._write_chunk(_filter_gemini_sse_event(buffer, thinking_indexes))
 
+    def _serve_cursor(self, model: str, body: bytes) -> None:
+        """Answer a request locally through the Cursor CLI bridge."""
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("request body must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        prompt = flatten_conversation(payload)
+        workspace = self.router.cursor_workspace
+        if payload.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            try:
+                for frame in sse_frames(model, prompt, workspace):
+                    self._write_chunk(frame)
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except CursorBridgeError as exc:
+                # Headers are already sent; report as an Anthropic SSE error.
+                self._write_chunk(error_frame(str(exc)))
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+            return
+        self._json_response(200, run_turn(model, prompt, workspace))
+
     def _record_status(self, route: str, model: str, error: str | None) -> None:
         if not self.router.record_status:
             return
@@ -587,6 +625,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         zai_upstream: str = ZAI_UPSTREAM,
         model_modalities: dict[str, frozenset[str]] | None = None,
         record_status: bool = True,
+        cursor_workspace: str | None = None,
     ) -> None:
         if anthropic_auth not in {"max", "api"}:
             raise ValueError("Anthropic authentication must be max or api")
@@ -598,6 +637,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         self.zai_upstream = zai_upstream
         self.model_modalities = model_modalities or {}
         self.record_status = record_status
+        self.cursor_workspace = cursor_workspace
         super().__init__(address, HybridRouterHandler)
 
 
@@ -612,6 +652,9 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         raise RuntimeError("invalid anthropic_auth preference")
     favorites = favorite_ids()
     catalog = load_catalog()
+    workspace = preferences.get("cursor_workspace")
+    if workspace is not None and not isinstance(workspace, str):
+        raise RuntimeError("invalid cursor_workspace preference")
     # The newly installed router is the first new-version process started by
     # ``clr update``. Refreshing here upgrades installations from older
     # releases without requiring users to rerun setup or select.
@@ -622,6 +665,7 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         favorites=set(favorites),
         anthropic_auth=auth,
         model_modalities=catalog_input_modalities(catalog),
+        cursor_workspace=workspace,
     )
     try:
         server.serve_forever()

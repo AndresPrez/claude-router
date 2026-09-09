@@ -10,7 +10,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
-from .models import ZAI_MODELS
+from .models import CURSOR_MODELS, ZAI_MODELS
 from .paths import catalog_path, credential_path
 from .storage import atomic_write_json, atomic_write_text, read_json_object
 
@@ -146,10 +146,10 @@ def load_catalog() -> list[dict[str, Any]]:
 
 
 def merged_catalog(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Append the static Z.ai entries without storing them in the cached index."""
+    """Append the static Z.ai and Cursor entries without storing them in the cached index."""
     seen = {str(model["id"]) for model in models if isinstance(model.get("id"), str)}
     merged = list(models)
-    for model in ZAI_MODELS:
+    for model in [*ZAI_MODELS, *CURSOR_MODELS]:
         if str(model["id"]) not in seen:
             seen.add(str(model["id"]))
             merged.append(model)
