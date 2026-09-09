@@ -336,6 +336,62 @@ def test_zai_route_payload_rewrites_model_and_keeps_other_fields() -> None:
     assert routed["messages"] == payload["messages"]
 
 
+def test_zai_route_strips_unicode_property_class_patterns() -> None:
+    payload = {
+        "model": f"clr/zai/{ZAI}",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [
+            {
+                "name": "artifact",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "field": {
+                            "type": "string",
+                            "pattern": "^[^\\p{Cc}]+$",
+                            "description": "untouched",
+                        },
+                        "plain": {"type": "string", "pattern": "^[a-z]+$"},
+                    },
+                },
+            }
+        ],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {ZAI})
+    routed = json.loads(body)
+    props = routed["tools"][0]["input_schema"]["properties"]
+
+    assert (route, model) == ("zai", ZAI)
+    assert "pattern" not in props["field"]
+    assert props["field"]["description"] == "untouched"
+    assert props["plain"]["pattern"] == "^[a-z]+$"
+
+
+def test_non_zai_route_keeps_unicode_property_class_patterns() -> None:
+    payload = {
+        "model": f"clr/openrouter/{GLM}",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [
+            {
+                "name": "artifact",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "field": {"type": "string", "pattern": "^[^\\p{Cc}]+$"},
+                    },
+                },
+            }
+        ],
+    }
+
+    _, _, body = route_payload(json.dumps(payload).encode(), {GLM})
+    routed = json.loads(body)
+
+    pattern = routed["tools"][0]["input_schema"]["properties"]["field"]["pattern"]
+    assert pattern == "^[^\\p{Cc}]+$"
+
+
 def test_zai_text_only_modality_handling_matches_openrouter() -> None:
     payload = {
         "model": f"clr/zai/{ZAI}",

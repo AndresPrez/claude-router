@@ -167,11 +167,32 @@ def _repair_gemini_tool_schemas(payload: dict[str, Any]) -> int:
     return _repair_itemless_arrays(tools)
 
 
-def _repair_gemini_tool_schemas(payload: dict[str, Any]) -> int:
+def _strip_zai_unsupported_patterns(value: Any) -> int:
+    """Drop regex ``pattern`` constraints Z.ai's schema validator rejects.
+
+    Z.ai's API (error 1210) rejects any tool-schema ``pattern`` using Unicode
+    property classes such as ``\\p{Cc}``, which Claude Code's built-in tools
+    (e.g. Artifact) ship. The constraint is optional in JSON Schema, so the
+    least destructive repair is to remove the offending ``pattern`` key while
+    keeping the rest of the schema intact.
+    """
+    if isinstance(value, list):
+        return sum(_strip_zai_unsupported_patterns(item) for item in value)
+    if not isinstance(value, dict):
+        return 0
+    repaired = 0
+    pattern = value.get("pattern")
+    if isinstance(pattern, str) and "\\p{" in pattern:
+        del value["pattern"]
+        repaired += 1
+    return repaired + sum(_strip_zai_unsupported_patterns(item) for item in value.values())
+
+
+def _repair_zai_tool_schemas(payload: dict[str, Any]) -> int:
     tools = payload.get("tools")
     if not isinstance(tools, list):
         return 0
-    return _repair_itemless_arrays(tools)
+    return _strip_zai_unsupported_patterns(tools)
 
 
 def _remove_gemini_adaptive_thinking(payload: dict[str, Any]) -> bool:
@@ -320,6 +341,8 @@ def route_payload(
         if route == "openrouter" and upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
             _repair_gemini_tool_schemas(payload)
             _remove_gemini_adaptive_thinking(payload)
+        if route == "zai":
+            _repair_zai_tool_schemas(payload)
         modalities = (model_modalities or {}).get(upstream_model)
         if modalities is not None and "image" not in modalities:
             vision_hint = _vision_hint(favorites, model_modalities or {})
