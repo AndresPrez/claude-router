@@ -23,7 +23,7 @@ def find_claude() -> str:
 
 
 def has_native_login() -> bool:
-    """Check native OAuth without loading clor's user-level routing settings."""
+    """Check native OAuth without loading clr's user-level routing settings."""
     try:
         executable = find_claude()
     except RuntimeError:
@@ -60,7 +60,7 @@ def has_native_login() -> bool:
 
 
 def launch_claude(arguments: list[str]) -> NoReturn:
-    """Exec Claude Code; retained so older ``clor claude`` commands keep working."""
+    """Exec Claude Code; retained so older ``clr claude`` commands keep working."""
     executable = find_claude()
     if arguments[:1] == ["--"]:
         arguments = arguments[1:]

@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-DEMO_ROOT = re.compile(r"/tmp/claude-openrouter-demo\.[A-Za-z0-9]+")
+DEMO_ROOT = re.compile(r"/tmp/claude-router-demo\.[A-Za-z0-9]+")
 TRANSIENT_THOUGHT_MARKERS = (
     "I've verified. Now let me answer briefly.",
     "The user is asking what model powers me",

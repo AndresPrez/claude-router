@@ -1,11 +1,11 @@
-"""Filesystem locations used by claude-openrouter."""
+"""Filesystem locations used by claude-router."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-APP_NAME = "claude-openrouter"
+APP_NAME = "claude-router"
 
 
 def config_dir() -> Path:
@@ -42,6 +42,14 @@ def credential_path() -> Path:
 
 def anthropic_credential_path() -> Path:
     return config_dir() / "anthropic-credential"
+
+
+def zai_credential_path() -> Path:
+    return config_dir() / "zai-credential"
+
+
+def cursor_credential_path() -> Path:
+    return config_dir() / "cursor-credential"
 
 
 def router_token_path() -> Path:
@@ -86,8 +94,8 @@ def router_status_path() -> Path:
 
 def systemd_unit_path() -> Path:
     root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    return root / "systemd" / "user" / "claude-openrouter.service"
+    return root / "systemd" / "user" / "claude-router.service"
 
 
 def launchd_plist_path() -> Path:
-    return Path.home() / "Library" / "LaunchAgents" / "io.github.xhluca.claude-openrouter.plist"
+    return Path.home() / "Library" / "LaunchAgents" / "io.github.andresprez.claude-router.plist"

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-SNAPSHOT_MARKER = "\x1b]777;claude-openrouter-demo-snapshot\x07"
+SNAPSHOT_MARKER = "\x1b]777;claude-router-demo-snapshot\x07"
 
 
 def output_text(event: Any) -> str:
@@ -40,7 +40,7 @@ def replay(cast: Path) -> int:
 
 
 def capture_snapshot(cast: Path, width: int, height: int) -> str:
-    socket = f"clor-demo-snapshot-{os.getpid()}"
+    socket = f"clr-demo-snapshot-{os.getpid()}"
     replay_command = shlex.join(
         [sys.executable, str(Path(__file__).resolve()), "--replay", str(cast)]
     )

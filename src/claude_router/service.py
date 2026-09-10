@@ -24,8 +24,8 @@ from .paths import (
 from .proxy import DEFAULT_PORT, LOCAL_TOKEN_HEADER, router_base_url
 from .storage import atomic_write_text, ensure_private_dir
 
-SERVICE_MARKER = "Managed by claude-openrouter hybrid routing"
-LAUNCHD_LABEL = "io.github.xhluca.claude-openrouter"
+SERVICE_MARKER = "Managed by claude-router hybrid routing"
+LAUNCHD_LABEL = "io.github.andresprez.claude-router"
 STARTUP_TIMEOUT_SECONDS = 30.0
 
 
@@ -42,14 +42,14 @@ def _serve_command(port: int) -> list[str]:
     # install can replace its target without leaving systemd/launchd pointing at
     # a deleted temporary directory.
     user_bin = Path(os.environ.get("XDG_BIN_HOME", Path.home() / ".local" / "bin"))
-    for name in ("clor", "claude-openrouter"):
+    for name in ("clr", "claude-router"):
         shim = user_bin / name
         if shim.exists():
             return [str(shim), "serve", "--port", str(port)]
-    executable = shutil.which("clor") or shutil.which("claude-openrouter")
+    executable = shutil.which("clr") or shutil.which("claude-router")
     if executable:
         return [executable, "serve", "--port", str(port)]
-    return [sys.executable, "-m", "claude_openrouter", "serve", "--port", str(port)]
+    return [sys.executable, "-m", "claude_router", "serve", "--port", str(port)]
 
 
 def healthcheck(port: int = DEFAULT_PORT, timeout: float = 2.0) -> bool:
@@ -86,7 +86,7 @@ def _start_systemd(port: int) -> str:
     command = " ".join(_systemd_quote(part) for part in _serve_command(port))
     content = f"""# {SERVICE_MARKER}
 [Unit]
-Description=Claude OpenRouter hybrid model router
+Description=Claude Router hybrid model router
 After=network-online.target
 
 [Service]
@@ -211,7 +211,7 @@ def _stop_fallback() -> bool:
             return False
         raise RuntimeError(f"could not verify that process {pid} belongs to the hybrid router")
     if command and not (
-        ("claude-openrouter" in command or "claude_openrouter" in command or "clor" in command)
+        ("claude-router" in command or "claude_router" in command or "clr" in command)
         and "serve" in command
     ):
         raise RuntimeError(f"refusing to stop unrecognized process {pid}")

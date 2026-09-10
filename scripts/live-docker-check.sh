@@ -17,7 +17,7 @@ claude_binary="$(readlink -f "$(command -v claude)")"
   exit 1
 }
 
-docker_home="$(mktemp -d "${TMPDIR:-/tmp}/clor-docker-home.XXXXXXXX")"
+docker_home="$(mktemp -d "${TMPDIR:-/tmp}/clr-docker-home.XXXXXXXX")"
 cleanup() {
   rm -rf -- "$docker_home"
 }
@@ -29,11 +29,11 @@ if [[ -f "$HOME/.claude.json" ]]; then
   install -m 600 "$HOME/.claude.json" "$docker_home/.claude.json"
 fi
 
-image="claude-openrouter-live:local"
+image="claude-router-live:local"
 docker build --quiet --file "$repo_dir/docker/Dockerfile.integration" --tag "$image" "$repo_dir"
 
 docker run --rm --interactive --user "$(id -u):$(id -g)" \
-  --hostname clor-docker \
+  --hostname clr-docker \
   --env HOME=/root \
   --mount "type=bind,src=$docker_home,dst=/root" \
   --mount "type=bind,src=$openrouter_key,dst=/run/secrets/openrouter,readonly" \
@@ -66,10 +66,10 @@ settings.write_text(json.dumps({'theme': 'dark', 'autoUpdates': False}))
 settings.chmod(0o600)
 PY
 
-# Establish the native Claude/Max control before clor changes any settings.
+# Establish the native Claude/Max control before clr changes any settings.
 baseline_status=0
 baseline="$(claude -p --model sonnet --tools '' --no-session-persistence \
-  'Reply with exactly CLOR_MAX_OK and nothing else.' \
+  'Reply with exactly CLR_MAX_OK and nothing else.' \
   </dev/null 2>/tmp/baseline-native-error.txt)" \
   || baseline_status=$?
 if [[ $baseline_status -ne 0 ]]; then
@@ -82,20 +82,20 @@ if [[ $baseline_status -ne 0 ]]; then
     exit "$baseline_status"
   fi
 else
-  [[ "$baseline" == *CLOR_MAX_OK* ]] \
+  [[ "$baseline" == *CLR_MAX_OK* ]] \
     || { echo "baseline native response check failed" >&2; exit 1; }
   baseline_result=success
   echo BASELINE_CLAUDE_MAX_OK
 fi
-cp /root/.claude/.credentials.json /tmp/native-credential-before-clor.json
-chmod 0600 /tmp/native-credential-before-clor.json
+cp /root/.claude/.credentials.json /tmp/native-credential-before-clr.json
+chmod 0600 /tmp/native-credential-before-clr.json
 
-clor setup --key-stdin --models \
+clr setup --key-stdin --models \
   z-ai/glm-5.3-flash '~deepseek/deepseek-v4-flash-latest' \
   < /run/secrets/openrouter
-cmp /tmp/native-credential-before-clor.json /root/.claude/.credentials.json
-echo NATIVE_CREDENTIAL_UNCHANGED_BY_CLOR
-clor doctor --json > /tmp/doctor.json
+cmp /tmp/native-credential-before-clr.json /root/.claude/.credentials.json
+echo NATIVE_CREDENTIAL_UNCHANGED_BY_CLR
+clr doctor --json > /tmp/doctor.json
 python - <<'PY'
 import json
 x=json.load(open('/tmp/doctor.json'))
@@ -104,10 +104,10 @@ assert x['anthropic_auth'] == 'max', x
 print('DOCKER_DOCTOR_OK')
 PY
 
-clor search glm-5.3 --tools > /tmp/tool-search.txt
+clr search glm-5.3 --tools > /tmp/tool-search.txt
 grep -q '^z-ai/glm-5.3-flash' /tmp/tool-search.txt
 echo OPENROUTER_TOOL_SEARCH_OK
-if ! clor check z-ai/glm-5.3-flash --yes > /tmp/tool-check.txt 2>/tmp/tool-check.error; then
+if ! clr check z-ai/glm-5.3-flash --yes > /tmp/tool-check.txt 2>/tmp/tool-check.error; then
   sed -n '1,160p' /tmp/tool-check.txt >&2
   sed -n '1,160p' /tmp/tool-check.error >&2
   exit 1
@@ -117,7 +117,7 @@ echo CLAUDE_CODE_TOOL_ROUND_TRIP_OK
 
 native_status=0
 native="$(claude -p --model sonnet --tools '' --no-session-persistence \
-  'Reply with exactly CLOR_MAX_OK and nothing else.' \
+  'Reply with exactly CLR_MAX_OK and nothing else.' \
   </dev/null 2>/tmp/native-error.txt)" \
   || native_status=$?
 if [[ $native_status -ne 0 ]]; then
@@ -130,7 +130,7 @@ if [[ $native_status -ne 0 ]]; then
     exit "$native_status"
   fi
 else
-  [[ "$native" == *CLOR_MAX_OK* ]] \
+  [[ "$native" == *CLR_MAX_OK* ]] \
     || { echo "native response check failed" >&2; exit 1; }
   native_result=success
 fi
@@ -142,7 +142,7 @@ echo CLAUDE_MAX_OUTCOME_UNCHANGED_BY_OPENROUTER
 python - <<'PY'
 import json
 from pathlib import Path
-p=Path('/root/.local/state/claude-openrouter/router-status.json')
+p=Path('/root/.local/state/claude-router/router-status.json')
 x=json.loads(p.read_text())
 assert x['route'] == 'anthropic', x
 assert x['model'].startswith('claude-'), x
@@ -150,26 +150,26 @@ print('CLAUDE_MAX_ROUTE_OK')
 PY
 
 openrouter_status=0
-openrouter="$(claude -p --model clor/openrouter/z-ai/glm-5.3-flash \
+openrouter="$(claude -p --model clr/openrouter/z-ai/glm-5.3-flash \
   --tools '' --no-session-persistence \
-  'Reply with exactly CLOR_OPENROUTER_OK and nothing else.' \
+  'Reply with exactly CLR_OPENROUTER_OK and nothing else.' \
   </dev/null 2>/tmp/openrouter-error.txt)" \
   || openrouter_status=$?
 if [[ $openrouter_status -ne 0 ]]; then
   printf '%s\n' "$openrouter" >&2
   sed -n '1,120p' /tmp/openrouter-error.txt >&2
-  test ! -f /root/.local/state/claude-openrouter/router-status.json \
-    || sed -n '1,120p' /root/.local/state/claude-openrouter/router-status.json >&2
+  test ! -f /root/.local/state/claude-router/router-status.json \
+    || sed -n '1,120p' /root/.local/state/claude-router/router-status.json >&2
   exit "$openrouter_status"
 fi
-[[ "$openrouter" == *CLOR_OPENROUTER_OK* ]] || {
+[[ "$openrouter" == *CLR_OPENROUTER_OK* ]] || {
   echo "OpenRouter response check failed" >&2
   exit 1
 }
 python - <<'PY'
 import json
 from pathlib import Path
-p=Path('/root/.local/state/claude-openrouter/router-status.json')
+p=Path('/root/.local/state/claude-router/router-status.json')
 x=json.loads(p.read_text())
 assert x['route'] == 'openrouter', x
 assert x['model'] == 'z-ai/glm-5.3-flash', x
@@ -179,11 +179,11 @@ PY
 python - <<'PY'
 import json
 from pathlib import Path
-manifest=json.loads(Path('/root/.config/claude-openrouter/subagents.json').read_text())
+manifest=json.loads(Path('/root/.config/claude-router/subagents.json').read_text())
 by_model={entry['model']: name for name, entry in manifest['agents'].items()}
 expected={
-    'clor/openrouter/z-ai/glm-5.3-flash': '/tmp/glm-agent-name',
-    'clor/openrouter/~deepseek/deepseek-v4-flash-latest': '/tmp/deepseek-agent-name',
+    'clr/openrouter/z-ai/glm-5.3-flash': '/tmp/glm-agent-name',
+    'clr/openrouter/~deepseek/deepseek-v4-flash-latest': '/tmp/deepseek-agent-name',
 }
 assert set(expected) <= set(by_model), by_model
 for model, destination in expected.items():
@@ -194,10 +194,10 @@ PY
 glm_agent="$(cat /tmp/glm-agent-name)"
 deepseek_agent="$(cat /tmp/deepseek-agent-name)"
 
-claude -p --model clor/openrouter/z-ai/glm-5.3-flash \
+claude -p --model clr/openrouter/z-ai/glm-5.3-flash \
   --permission-mode bypassPermissions --tools Agent --no-session-persistence \
   --debug-file /tmp/glm-to-deepseek.log --output-format json \
-  "Invoke the ${deepseek_agent} subagent exactly once. Tell it to reply with exactly CHILD_DEEPSEEK_OK. Deliberately set the Agent model parameter to sonnet; the clor hook must preserve the named subagent's exact model instead. Return its result." \
+  "Invoke the ${deepseek_agent} subagent exactly once. Tell it to reply with exactly CHILD_DEEPSEEK_OK. Deliberately set the Agent model parameter to sonnet; the clr hook must preserve the named subagent's exact model instead. Return its result." \
   </dev/null > /tmp/glm-to-deepseek.json
 python - <<'PY'
 import json
@@ -205,16 +205,16 @@ x=json.load(open('/tmp/glm-to-deepseek.json'))
 assert not x['is_error'], x
 assert 'CHILD_DEEPSEEK_OK' in x['result'], x['result']
 usage=x['modelUsage']
-assert 'clor/openrouter/z-ai/glm-5.3-flash' in usage, usage
-assert 'clor/openrouter/~deepseek/deepseek-v4-flash-latest' in usage, usage
+assert 'clr/openrouter/z-ai/glm-5.3-flash' in usage, usage
+assert 'clr/openrouter/~deepseek/deepseek-v4-flash-latest' in usage, usage
 assert not any(model.startswith('claude-') for model in usage), usage
 print('GLM_PARENT_TO_DEEPSEEK_SUBAGENT_OK')
 PY
 
-claude -p --model 'clor/openrouter/~deepseek/deepseek-v4-flash-latest' \
+claude -p --model 'clr/openrouter/~deepseek/deepseek-v4-flash-latest' \
   --permission-mode bypassPermissions --tools Agent --no-session-persistence \
   --debug-file /tmp/deepseek-to-glm.log --output-format json \
-  "Invoke the ${glm_agent} subagent exactly once. Tell it to reply with exactly CHILD_GLM_OK. Deliberately set the Agent model parameter to sonnet; the clor hook must preserve the named subagent's exact model instead. Return its result." \
+  "Invoke the ${glm_agent} subagent exactly once. Tell it to reply with exactly CHILD_GLM_OK. Deliberately set the Agent model parameter to sonnet; the clr hook must preserve the named subagent's exact model instead. Return its result." \
   </dev/null > /tmp/deepseek-to-glm.json
 python - <<'PY'
 import json
@@ -222,8 +222,8 @@ x=json.load(open('/tmp/deepseek-to-glm.json'))
 assert not x['is_error'], x
 assert 'CHILD_GLM_OK' in x['result'], x['result']
 usage=x['modelUsage']
-assert 'clor/openrouter/~deepseek/deepseek-v4-flash-latest' in usage, usage
-assert 'clor/openrouter/z-ai/glm-5.3-flash' in usage, usage
+assert 'clr/openrouter/~deepseek/deepseek-v4-flash-latest' in usage, usage
+assert 'clr/openrouter/z-ai/glm-5.3-flash' in usage, usage
 assert not any(model.startswith('claude-') for model in usage), usage
 print('DEEPSEEK_PARENT_TO_GLM_SUBAGENT_OK')
 PY
@@ -252,9 +252,9 @@ print('CLAUDE_MIXED_MODEL_PICKER_OK')
 PY
 
 background_output="$(claude --background \
-  --model clor/openrouter/z-ai/glm-5.3-flash \
+  --model clr/openrouter/z-ai/glm-5.3-flash \
   --permission-mode dontAsk \
-  'Reply with exactly CLOR_AGENT_VIEW_OK and nothing else.' </dev/null)"
+  'Reply with exactly CLR_AGENT_VIEW_OK and nothing else.' </dev/null)"
 printf '%s\n' "$background_output" > /tmp/background-output.txt
 
 agent_ready=0
@@ -277,7 +277,7 @@ for session in x:
             if event.get('type') != 'assistant':
                 continue
             for block in event.get('message', {}).get('content', []):
-                if isinstance(block, dict) and 'CLOR_AGENT_VIEW_OK' in str(block.get('text', '')):
+                if isinstance(block, dict) and 'CLR_AGENT_VIEW_OK' in str(block.get('text', '')):
                     raise SystemExit(0)
 raise SystemExit(1)
 PY
@@ -344,13 +344,13 @@ for path in Path('/root/.claude/projects').rglob(f'{session_id}.jsonl'):
         for block in message.get('content', []):
             if isinstance(block, dict) and block.get('type') == 'text':
                 turns.append(str(block.get('text', '')))
-assert any('CLOR_AGENT_VIEW_OK' in turn for turn in turns), turns
+assert any('CLR_AGENT_VIEW_OK' in turn for turn in turns), turns
 print('AGENT_VIEW_BACKGROUND_OK')
 PY
 python - <<'PY'
 import json
 from pathlib import Path
-p=Path('/root/.local/state/claude-openrouter/router-status.json')
+p=Path('/root/.local/state/claude-router/router-status.json')
 x=json.loads(p.read_text())
 assert x['route'] == 'openrouter', x
 assert x['model'] == 'z-ai/glm-5.3-flash', x
@@ -361,7 +361,7 @@ expect <<'EXPECT' > /dev/null
 set timeout 12
 log_user 1
 log_file /tmp/agent-view.terminal
-spawn -noecho claude agents --model clor/openrouter/z-ai/glm-5.3-flash
+spawn -noecho claude agents --model clr/openrouter/z-ai/glm-5.3-flash
 after 4000
 send "\003"
 expect eof
@@ -378,7 +378,7 @@ print('AGENT_VIEW_SCREEN_RENDERED_OK')
 PY
 echo AGENT_VIEW_TUI_OK
 
-clor reset
-test ! -e /root/.config/claude-openrouter/credential
-echo CLOR_RESET_OK
+clr reset
+test ! -e /root/.config/claude-router/credential
+echo CLR_RESET_OK
 CONTAINER

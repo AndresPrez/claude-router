@@ -85,7 +85,7 @@ def _draw(
 ) -> None:
     screen.erase()
     height, width = screen.getmaxyx()
-    title = "Claude OpenRouter — choose /model favorites"
+    title = "Claude Router — choose /model favorites"
     screen.addnstr(0, 0, title, max(1, width - 1), _style(PAIR_TITLE, curses.A_BOLD))
     prompt = f"Search: {query}"
     _add_segments(
@@ -115,14 +115,10 @@ def _draw(
         )
     capability_models = models if catalog is None else catalog
     selected_without_tools = sum(
-        not supports_tools(model)
-        for model in capability_models
-        if model["id"] in selected
+        not supports_tools(model) for model in capability_models if model["id"] in selected
     )
     selection_warning = (
-        f" · ⚠ {selected_without_tools} without advertised tools"
-        if selected_without_tools
-        else ""
+        f" · ⚠ {selected_without_tools} without advertised tools" if selected_without_tools else ""
     )
     _add_segments(
         screen,

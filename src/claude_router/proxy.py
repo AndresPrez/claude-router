@@ -1,4 +1,4 @@
-"""Fail-closed local router for native Claude and OpenRouter models."""
+"""Fail-closed local router for native Claude, OpenRouter, and Z.ai models."""
 
 from __future__ import annotations
 
@@ -14,23 +14,35 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .anthropic import read_anthropic_credential
+from .cursor import (
+    AgentRegistry,
+    CursorBridgeError,
+    bridge_frames,
+    cancel_run,
+    error_frame,
+    read_cursor_credential,
+    run_messages,
+)
 from .models import (
+    CONTEXT_BUDGET_SUFFIX,
     OPENROUTER_MODEL_PREFIX,
     catalog_input_modalities,
     exact_models,
     hybrid_openrouter_allowed,
     original_model,
+    route_of_namespaced,
 )
 from .openrouter import load_catalog, read_credential
 from .paths import router_status_path, router_token_path
 from .settings import favorite_ids, load_preferences, refresh_managed_subagents
 from .storage import atomic_write_json
+from .zai import ZAI_UPSTREAM, read_zai_credential
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9417
 ANTHROPIC_UPSTREAM = "https://api.anthropic.com"
 OPENROUTER_UPSTREAM = "https://openrouter.ai/api"
-LOCAL_TOKEN_HEADER = "X-Claude-OpenRouter-Token"
+LOCAL_TOKEN_HEADER = "X-Claude-Router-Token"
 MAX_BODY_BYTES = 128 * 1024 * 1024
 ALLOWED_PATHS = {"/v1/messages", "/v1/messages/count_tokens"}
 HOP_BY_HOP = {
@@ -61,7 +73,7 @@ def _vision_hint(favorites: set[str], model_modalities: dict[str, frozenset[str]
 
 def _capability_notice(model: str, vision_hint: str) -> str:
     return (
-        "Claude OpenRouter capability notice: the selected model "
+        "Claude Router capability notice: the selected model "
         f"{model} is text-only; OpenRouter's catalog does not list image as an input "
         "modality. You cannot inspect image pixels with this model. Do not claim that "
         "you viewed an image or repeatedly call a tool to read one. If the user asks "
@@ -165,6 +177,34 @@ def _repair_gemini_tool_schemas(payload: dict[str, Any]) -> int:
     return _repair_itemless_arrays(tools)
 
 
+def _strip_zai_unsupported_patterns(value: Any) -> int:
+    """Drop regex ``pattern`` constraints Z.ai's schema validator rejects.
+
+    Z.ai's API (error 1210) rejects any tool-schema ``pattern`` using Unicode
+    property classes such as ``\\p{Cc}``, which Claude Code's built-in tools
+    (e.g. Artifact) ship. The constraint is optional in JSON Schema, so the
+    least destructive repair is to remove the offending ``pattern`` key while
+    keeping the rest of the schema intact.
+    """
+    if isinstance(value, list):
+        return sum(_strip_zai_unsupported_patterns(item) for item in value)
+    if not isinstance(value, dict):
+        return 0
+    repaired = 0
+    pattern = value.get("pattern")
+    if isinstance(pattern, str) and "\\p{" in pattern:
+        del value["pattern"]
+        repaired += 1
+    return repaired + sum(_strip_zai_unsupported_patterns(item) for item in value.values())
+
+
+def _repair_zai_tool_schemas(payload: dict[str, Any]) -> int:
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return 0
+    return _strip_zai_unsupported_patterns(tools)
+
+
 def _remove_gemini_adaptive_thinking(payload: dict[str, Any]) -> bool:
     """Drop Claude thinking controls that can yield empty Gemini turns."""
     thinking = payload.get("thinking")
@@ -250,8 +290,7 @@ def _remove_gemini_thinking_content(body: bytes) -> bytes:
     payload["content"] = [
         block
         for block in payload["content"]
-        if not isinstance(block, dict)
-        or block.get("type") not in {"thinking", "redacted_thinking"}
+        if not isinstance(block, dict) or block.get("type") not in {"thinking", "redacted_thinking"}
     ]
     return json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
 
@@ -276,13 +315,23 @@ def read_router_token() -> str:
 
 def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
     """Return ``(route, upstream_model)`` or reject an ambiguous model."""
-    openrouter_model = original_model(model)
-    if openrouter_model is not None:
-        if not hybrid_openrouter_allowed(openrouter_model):
+    bare_model = original_model(model)
+    if bare_model is not None:
+        if bare_model.endswith(CONTEXT_BUDGET_SUFFIX):
+            bare_model = bare_model[: -len(CONTEXT_BUDGET_SUFFIX)]
+        if route_of_namespaced(model) == "zai":
+            if bare_model not in favorites:
+                raise ValueError("Z.ai model is not in the clr favorites allowlist")
+            return "zai", bare_model
+        if route_of_namespaced(model) == "cursor":
+            if bare_model not in favorites:
+                raise ValueError("Cursor model is not in the clr favorites allowlist")
+            return "cursor", bare_model
+        if not hybrid_openrouter_allowed(bare_model):
             raise ValueError("Anthropic and automatic models are blocked on the OpenRouter route")
-        if openrouter_model not in favorites:
-            raise ValueError("OpenRouter model is not in the clor favorites allowlist")
-        return "openrouter", openrouter_model
+        if bare_model not in favorites:
+            raise ValueError("OpenRouter model is not in the clr favorites allowlist")
+        return "openrouter", bare_model
     if model in {"default", "opus", "sonnet", "haiku"} or model.startswith("claude-"):
         return "anthropic", model
     raise ValueError(
@@ -303,11 +352,13 @@ def route_payload(
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), str):
         raise ValueError("request body must contain a string model")
     route, upstream_model = classify_model(payload["model"], favorites)
-    if route == "openrouter":
+    if route in {"openrouter", "zai", "cursor"}:
         payload["model"] = upstream_model
-        if upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
+        if route == "openrouter" and upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
             _repair_gemini_tool_schemas(payload)
             _remove_gemini_adaptive_thinking(payload)
+        if route == "zai":
+            _repair_zai_tool_schemas(payload)
         modalities = (model_modalities or {}).get(upstream_model)
         if modalities is not None and "image" not in modalities:
             vision_hint = _vision_hint(favorites, model_modalities or {})
@@ -329,7 +380,7 @@ def _target(upstream: str) -> tuple[type[http.client.HTTPConnection], str, int |
 
 class HybridRouterHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "ClaudeOpenRouter"
+    server_version = "ClaudeRouter"
 
     @property
     def router(self) -> HybridRouterServer:
@@ -369,11 +420,16 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             route, model, body = route_payload(
                 body, self.router.favorites, self.router.model_modalities
             )
-            upstream = (
-                self.router.openrouter_upstream
-                if route == "openrouter"
-                else self.router.anthropic_upstream
-            )
+            if route == "cursor":
+                self._serve_cursor(model, body)
+                self._record_status("cursor", model, None)
+                return
+            if route == "openrouter":
+                upstream = self.router.openrouter_upstream
+            elif route == "zai":
+                upstream = self.router.zai_upstream
+            else:
+                upstream = self.router.anthropic_upstream
             headers = self._upstream_headers(route, model, len(body))
             self._forward(
                 upstream,
@@ -381,8 +437,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 headers,
                 body,
                 normalize_gemini=(
-                    route == "openrouter"
-                    and model.casefold().startswith(GEMINI_MODEL_PREFIX)
+                    route == "openrouter" and model.casefold().startswith(GEMINI_MODEL_PREFIX)
                 ),
             )
             self._record_status(route, model, None)
@@ -393,9 +448,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             self._error_response(502, "api_error", f"routing failed: {exc}")
             self._record_status("error", "unknown", str(exc))
 
-    def _upstream_headers(
-        self, route: str, model: str, content_length: int
-    ) -> dict[str, str]:
+    def _upstream_headers(self, route: str, model: str, content_length: int) -> dict[str, str]:
         removed = HOP_BY_HOP | {
             "host",
             "content-length",
@@ -419,8 +472,10 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         headers.setdefault("Content-Type", "application/json")
         if route == "openrouter":
             headers["Authorization"] = f"Bearer {read_credential()}"
-            headers["HTTP-Referer"] = "https://github.com/xhluca/claude-openrouter"
-            headers["X-Title"] = "Claude OpenRouter"
+            headers["HTTP-Referer"] = "https://github.com/AndresPrez/claude-router"
+            headers["X-Title"] = "Claude Router"
+        elif route == "zai":
+            headers["Authorization"] = f"Bearer {read_zai_credential()}"
         elif self.router.anthropic_auth == "api":
             headers["X-Api-Key"] = read_anthropic_credential()
         else:
@@ -493,6 +548,57 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         if buffer:
             self._write_chunk(_filter_gemini_sse_event(buffer, thinking_indexes))
 
+    def _serve_cursor(self, model: str, body: bytes) -> None:
+        """Answer a request locally through the Cursor Cloud Agents bridge."""
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("request body must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        credential = read_cursor_credential()
+        active: dict[str, str] = {}
+        frames = bridge_frames(
+            payload,
+            model,
+            self.router.cursor_registry,
+            credential,
+            repos=self.router.cursor_repos,
+            mode=self.router.cursor_mode,
+            active=active,
+        )
+        if payload.get("stream"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            try:
+                for frame in frames:
+                    self._write_chunk(frame)
+            except (BrokenPipeError, ConnectionResetError):
+                if "agent_id" in active:
+                    cancel_run(
+                        active["agent_id"], active["run_id"], active["credential"]
+                    )
+                return
+            except CursorBridgeError as exc:
+                # Headers are already sent; report as an Anthropic SSE error.
+                self._write_chunk(error_frame(str(exc)))
+            self.wfile.write(b"0\r\n\r\n")
+            self.wfile.flush()
+            return
+        response = run_messages(
+            payload,
+            model,
+            self.router.cursor_registry,
+            credential,
+            repos=self.router.cursor_repos,
+            mode=self.router.cursor_mode,
+            active=active,
+        )
+        self._json_response(200, response)
+
     def _record_status(self, route: str, model: str, error: str | None) -> None:
         if not self.router.record_status:
             return
@@ -549,8 +655,12 @@ class HybridRouterServer(ThreadingHTTPServer):
         anthropic_auth: str,
         anthropic_upstream: str = ANTHROPIC_UPSTREAM,
         openrouter_upstream: str = OPENROUTER_UPSTREAM,
+        zai_upstream: str = ZAI_UPSTREAM,
         model_modalities: dict[str, frozenset[str]] | None = None,
         record_status: bool = True,
+        cursor_registry: AgentRegistry | None = None,
+        cursor_repos: list[str] | None = None,
+        cursor_mode: str = "plan",
     ) -> None:
         if anthropic_auth not in {"max", "api"}:
             raise ValueError("Anthropic authentication must be max or api")
@@ -559,8 +669,12 @@ class HybridRouterServer(ThreadingHTTPServer):
         self.anthropic_auth = anthropic_auth
         self.anthropic_upstream = anthropic_upstream
         self.openrouter_upstream = openrouter_upstream
+        self.zai_upstream = zai_upstream
         self.model_modalities = model_modalities or {}
         self.record_status = record_status
+        self.cursor_registry = cursor_registry or AgentRegistry()
+        self.cursor_repos = cursor_repos
+        self.cursor_mode = cursor_mode if cursor_mode in {"plan", "agent"} else "plan"
         super().__init__(address, HybridRouterHandler)
 
 
@@ -575,9 +689,18 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         raise RuntimeError("invalid anthropic_auth preference")
     favorites = favorite_ids()
     catalog = load_catalog()
+    cursor_repos = preferences.get("cursor_repos")
+    if cursor_repos is not None and (
+        not isinstance(cursor_repos, list)
+        or not all(isinstance(url, str) and url for url in cursor_repos)
+    ):
+        raise RuntimeError("invalid cursor_repos preference")
+    cursor_mode = preferences.get("cursor_mode", "plan")
+    if cursor_mode not in {"plan", "agent"}:
+        raise RuntimeError("invalid cursor_mode preference")
     # The newly installed router is the first new-version process started by
-    # ``clor update``. Refreshing here upgrades existing 0.4.x installations
-    # without requiring users to rerun setup or select.
+    # ``clr update``. Refreshing here upgrades installations from older
+    # releases without requiring users to rerun setup or select.
     refresh_managed_subagents(exact_models(catalog, favorites))
     server = HybridRouterServer(
         (host, port),
@@ -585,6 +708,8 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         favorites=set(favorites),
         anthropic_auth=auth,
         model_modalities=catalog_input_modalities(catalog),
+        cursor_repos=cursor_repos,
+        cursor_mode=cursor_mode,
     )
     try:
         server.serve_forever()

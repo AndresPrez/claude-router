@@ -14,7 +14,11 @@ from .agents import (
     remove_managed_agents,
     sync_managed_agents,
 )
-from .models import hybrid_openrouter_allowed, namespaced_model, picker_row
+from .models import (
+    hybrid_openrouter_allowed,
+    namespaced_model_with_budget,
+    picker_row,
+)
 from .paths import (
     anthropic_credential_path,
     backup_path,
@@ -27,6 +31,7 @@ from .paths import (
     preferences_path,
     router_token_path,
     state_dir,
+    zai_credential_path,
 )
 from .storage import atomic_write_json, atomic_write_text, read_json_object
 
@@ -39,7 +44,7 @@ LEGACY_ENV_FIELDS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_
 VERSION_2_ENV_FIELDS = (*LEGACY_ENV_FIELDS, "ANTHROPIC_CUSTOM_HEADERS")
 ENV_FIELDS = (*VERSION_2_ENV_FIELDS, "ENABLE_TOOL_SEARCH")
 BACKUP_VERSION = 4
-LOCAL_TOKEN_HEADER = "X-Claude-OpenRouter-Token"
+LOCAL_TOKEN_HEADER = "X-Claude-Router-Token"
 CHECK_CONFIRMATION_FIELD = "confirm_billable_checks"
 
 
@@ -55,7 +60,7 @@ def _capture_backup(settings: dict[str, Any], existed: bool) -> None:
         backup = read_json_object(path)
         if backup.get("settings_path") != str(claude_settings_path()):
             raise RuntimeError(
-                "an existing claude-openrouter backup belongs to a different "
+                "an existing claude-router backup belongs to a different "
                 "CLAUDE_CONFIG_DIR; reset it from that environment first"
             )
         if backup.get("version") == 3:
@@ -274,6 +279,11 @@ def configure_claude(
         raise ValueError("Anthropic authentication must be max or api")
     if anthropic_auth == "api" and not anthropic_credential_path().exists():
         raise RuntimeError("Anthropic API mode requires a configured Anthropic credential")
+    needs_zai_key = any(model.get("provider") == "zai" for model in models)
+    if needs_zai_key and not zai_credential_path().exists():
+        raise RuntimeError(
+            "Z.ai favorites require a configured Z.ai key; run `clr config --zai-key`"
+        )
     if not _active_backup():
         migrate_legacy_settings()
 
@@ -289,7 +299,9 @@ def configure_claude(
     old_default = old_preferences.get("default_model")
     ids = [str(model["id"]) for model in models]
     default_id = old_default if isinstance(old_default, str) and old_default in ids else ids[0]
-    default_model = namespaced_model(default_id)
+    default_model = namespaced_model_with_budget(
+        next(model for model in models if str(model["id"]) == default_id)
+    )
 
     settings.pop("apiKeyHelper", None)
     env = dict(existing_env or {})
@@ -309,9 +321,14 @@ def configure_claude(
         # Claude login. Native Claude routes still reject this local-only token.
         env["ANTHROPIC_AUTH_TOKEN"] = token
         env["ANTHROPIC_CUSTOM_HEADERS"] = _router_headers(previous_headers, token)
-    # Deferred tool loading is currently rejected by non-Anthropic models in
-    # Agent View. Connectors remain authenticated; their tools load eagerly.
-    env["ENABLE_TOOL_SEARCH"] = "false"
+    # Deferred tool loading used to be rejected by non-Anthropic upstreams;
+    # the Z.ai route now strips the offending schema patterns (verified live),
+    # so deferred loading is safe and saves ~100k tokens with large tool sets.
+    # A pre-existing explicit value is preserved.
+    existing_search = env.get("ENABLE_TOOL_SEARCH")
+    env["ENABLE_TOOL_SEARCH"] = (
+        existing_search if isinstance(existing_search, str) and existing_search else "true"
+    )
     settings["env"] = env
     settings["modelPicker"] = {
         "options": [picker_row(model, hybrid=True) for model in models],
@@ -357,8 +374,7 @@ def _looks_managed_picker(value: Any) -> bool:
         return False
     options = value.get("options")
     return isinstance(options, list) and any(
-        isinstance(row, dict)
-        and "OpenRouter via claude-openrouter" in str(row.get("description", ""))
+        isinstance(row, dict) and "via claude-router" in str(row.get("description", ""))
         for row in options
     )
 
@@ -413,16 +429,13 @@ def restore_claude_settings() -> bool:
         managed_picker = _looks_managed_picker(settings.get("modelPicker"))
         picker = settings.get("modelPicker")
         picker_options = picker.get("options", []) if isinstance(picker, dict) else []
-        managed_model_ids = {
-            row.get("model") for row in picker_options if isinstance(row, dict)
-        }
+        managed_model_ids = {row.get("model") for row in picker_options if isinstance(row, dict)}
         managed_model = settings.get("model") in managed_model_ids
         env = settings.get("env")
         managed_headers = (
             isinstance(env, dict)
             and isinstance(env.get("ANTHROPIC_CUSTOM_HEADERS"), str)
-            and LOCAL_TOKEN_HEADER.casefold()
-            in env["ANTHROPIC_CUSTOM_HEADERS"].casefold()
+            and LOCAL_TOKEN_HEADER.casefold() in env["ANTHROPIC_CUSTOM_HEADERS"].casefold()
         )
         managed_hook = _remove_managed_agent_hook(settings)
         managed_base = isinstance(env, dict) and (
@@ -441,9 +454,7 @@ def restore_claude_settings() -> bool:
             settings.pop("modelPicker", None)
         if managed_model:
             settings.pop("model", None)
-        if isinstance(env, dict) and (
-            managed_helper or managed_picker or managed_base
-        ):
+        if isinstance(env, dict) and (managed_helper or managed_picker or managed_base):
             env = dict(env)
             if managed_base:
                 env.pop("ANTHROPIC_BASE_URL", None)
@@ -482,8 +493,7 @@ def migrate_legacy_settings() -> bool:
         managed_headers = (
             isinstance(env, dict)
             and isinstance(env.get("ANTHROPIC_CUSTOM_HEADERS"), str)
-            and LOCAL_TOKEN_HEADER.casefold()
-            in env["ANTHROPIC_CUSTOM_HEADERS"].casefold()
+            and LOCAL_TOKEN_HEADER.casefold() in env["ANTHROPIC_CUSTOM_HEADERS"].casefold()
         )
         legacy_present = (
             settings.get("apiKeyHelper") == str(helper_path().resolve())
@@ -494,9 +504,7 @@ def migrate_legacy_settings() -> bool:
                 and (
                     env.get("ANTHROPIC_BASE_URL") == LEGACY_BASE_URL
                     or (
-                        str(env.get("ANTHROPIC_BASE_URL", "")).startswith(
-                            "http://127.0.0.1:"
-                        )
+                        str(env.get("ANTHROPIC_BASE_URL", "")).startswith("http://127.0.0.1:")
                         and managed_headers
                     )
                 )
@@ -533,6 +541,7 @@ def assert_private_files() -> None:
     paths = [
         credential_path(),
         anthropic_credential_path(),
+        zai_credential_path(),
         router_token_path(),
         preferences_path(),
         helper_path(),

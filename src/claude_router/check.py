@@ -18,8 +18,8 @@ from .launcher import find_claude
 from .models import catalog_input_modalities, namespaced_model
 from .proxy import LOCAL_TOKEN_HEADER, HybridRouterServer, router_base_url
 
-PROBE_MARKER = "CLOR_TOOL_CHECK_OK"
-PROBE_FILENAME = "clor-tool-probe.txt"
+PROBE_MARKER = "CLR_TOOL_CHECK_OK"
+PROBE_FILENAME = "clr-tool-probe.txt"
 PROBE_INPUT_TOKEN_ESTIMATE = 15_000
 PROBE_OUTPUT_TOKEN_ESTIMATE = 500
 PROBE_INPUT_TOKEN_PLANNING_MAX = 500_000
@@ -63,10 +63,7 @@ def estimate_probe_cost(
         return None
     if not prompt.is_finite() or not completion.is_finite() or prompt < 0 or completion < 0:
         return None
-    return (
-        prompt * input_tokens
-        + completion * output_tokens
-    )
+    return prompt * input_tokens + completion * output_tokens
 
 
 def _stream_events(output: str) -> list[dict[str, Any]]:
@@ -115,8 +112,7 @@ def parse_probe_result(
 
     debug_called = re.search(r"tool_dispatch_start\s+tool=Glob\b", debug_log) is not None
     debug_completed = (
-        re.search(r"tool_dispatch_end\s+tool=Glob\b[^\n]*\boutcome=ok\b", debug_log)
-        is not None
+        re.search(r"tool_dispatch_end\s+tool=Glob\b[^\n]*\boutcome=ok\b", debug_log) is not None
     )
     tool_called = bool(tool_ids) or debug_called
     tool_completed = bool(tool_ids & completed_ids) or debug_completed
@@ -147,7 +143,7 @@ def probe_model(model: dict[str, Any], *, timeout: int = 180) -> ToolProbeResult
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        with tempfile.TemporaryDirectory(prefix="clor-tool-check-") as directory:
+        with tempfile.TemporaryDirectory(prefix="clr-tool-check-") as directory:
             workdir = Path(directory)
             (workdir / PROBE_FILENAME).write_text("tool round-trip probe\n", encoding="utf-8")
             debug_path = workdir / "claude-debug.log"
@@ -173,7 +169,7 @@ def probe_model(model: dict[str, Any], *, timeout: int = 180) -> ToolProbeResult
                 "--model",
                 namespaced_model(model_id),
                 "--name",
-                "clor-tool-check",
+                "clr-tool-check",
                 "--setting-sources",
                 "project,local",
                 "--tools",

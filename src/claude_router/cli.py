@@ -1,4 +1,4 @@
-"""Command-line interface for Claude OpenRouter."""
+"""Command-line interface for Claude Router."""
 
 from __future__ import annotations
 
@@ -28,25 +28,41 @@ from .check import (
     estimate_probe_cost,
     probe_model,
 )
+from .cursor import (
+    read_cursor_credential,
+    write_cursor_credential,
+)
+from .cursor import (
+    validate_cursor_key_shape as _validate_cursor_key_shape,
+)
 from .launcher import has_native_login, launch_claude
 from .models import (
     exact_models,
     hybrid_openrouter_allowed,
     original_model,
     print_models,
+    provider_of,
     search_models,
     supports_tools,
     tool_capability_badge,
 )
 from .openrouter import (
     load_catalog,
+    merged_catalog,
     read_credential,
     refresh_catalog,
     validate_key,
     validate_key_shape,
     write_credential,
 )
-from .paths import anthropic_credential_path, catalog_path, claude_settings_path, credential_path
+from .paths import (
+    anthropic_credential_path,
+    catalog_path,
+    claude_settings_path,
+    credential_path,
+    cursor_credential_path,
+    zai_credential_path,
+)
 from .picker import choose_models
 from .proxy import DEFAULT_HOST, DEFAULT_PORT, run_router
 from .service import healthcheck, start_service, stop_service
@@ -62,6 +78,7 @@ from .settings import (
 from .storage import read_json_object
 from .uninstall import remove_installed_package
 from .update import update_installed_package
+from .zai import read_zai_credential, validate_zai_key_shape, write_zai_credential
 
 MINIMUM_CLAUDE_VERSION = (2, 1, 242)
 
@@ -82,8 +99,8 @@ def _styled(value: object, code: str, *, stream: Any | None = None) -> str:
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
-        prog="claude-openrouter",
-        description="Route native Claude and selected OpenRouter models safely.",
+        prog="claude-router",
+        description="Route native Claude, OpenRouter, and Z.ai models safely.",
     )
     root.add_argument("--version", action="version", version=__version__)
     commands = root.add_subparsers(dest="command", required=True)
@@ -109,7 +126,7 @@ def parser() -> argparse.ArgumentParser:
         "check",
         help="run a billable Claude Code tool round-trip for one model",
     )
-    check.add_argument("model", help="exact OpenRouter model ID (need not be a favorite)")
+    check.add_argument("model", help="exact OpenRouter or Z.ai model ID (need not be a favorite)")
     check.add_argument(
         "-y",
         "--yes",
@@ -121,6 +138,11 @@ def parser() -> argparse.ArgumentParser:
     setup.add_argument("--key-stdin", action="store_true", help="read the key from stdin")
     setup.add_argument("--no-validate", action="store_true", help="skip the key metadata check")
     setup.add_argument(
+        "--no-openrouter",
+        action="store_true",
+        help="configure Z.ai Coding Plan models without an OpenRouter key",
+    )
+    setup.add_argument(
         "--models",
         nargs="+",
         metavar="MODEL",
@@ -130,6 +152,16 @@ def parser() -> argparse.ArgumentParser:
         "--anthropic-key-stdin",
         action="store_true",
         help="read an Anthropic API key from stdin after the OpenRouter key",
+    )
+    setup.add_argument(
+        "--zai-key",
+        action="store_true",
+        help="prompt to store a Z.ai API key for Coding Plan models",
+    )
+    setup.add_argument(
+        "--zai-key-stdin",
+        action="store_true",
+        help="read a Z.ai API key from stdin",
     )
     setup.add_argument(
         "--anthropic-auth",
@@ -159,6 +191,26 @@ def parser() -> argparse.ArgumentParser:
         help="read and store an Anthropic API key, then select API billing",
     )
     config.add_argument(
+        "--zai-key",
+        action="store_true",
+        help="prompt to store a Z.ai API key for Coding Plan models",
+    )
+    config.add_argument(
+        "--zai-key-stdin",
+        action="store_true",
+        help="read and store a Z.ai API key from stdin",
+    )
+    config.add_argument(
+        "--cursor-key",
+        action="store_true",
+        help="prompt to store a Cursor API key for Cloud Agents models",
+    )
+    config.add_argument(
+        "--cursor-key-stdin",
+        action="store_true",
+        help="read and store a Cursor API key from stdin",
+    )
+    config.add_argument(
         "--check-confirmation",
         choices=("ask", "never"),
         help="ask before billable model checks, or never ask",
@@ -176,7 +228,7 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "update",
         aliases=["upgrade"],
-        help="install the latest Claude OpenRouter release",
+        help="install the latest Claude Router release",
     )
     claude = commands.add_parser(
         "claude",
@@ -284,6 +336,36 @@ def _read_anthropic_key(*, from_stdin: bool) -> str:
     return key
 
 
+def _read_zai_key(*, from_stdin: bool) -> str:
+    if from_stdin:
+        key = sys.stdin.readline().strip()
+    else:
+        try:
+            existing = read_zai_credential()
+        except RuntimeError:
+            existing = None
+        if existing and _confirm_key_reuse(zai_credential_path(), "Z.ai API key"):
+            return existing
+        key = _masked_input("Z.ai API key: ").strip()
+    validate_zai_key_shape(key)
+    return key
+
+
+def _read_cursor_key(*, from_stdin: bool) -> str:
+    if from_stdin:
+        key = sys.stdin.readline().strip()
+    else:
+        try:
+            existing = read_cursor_credential()
+        except RuntimeError:
+            existing = None
+        if existing and _confirm_key_reuse(cursor_credential_path(), "Cursor API key"):
+            return existing
+        key = _masked_input("Cursor API key: ").strip()
+    _validate_cursor_key_shape(key)
+    return key
+
+
 def _claude_version() -> tuple[int, ...] | None:
     executable = shutil.which("claude")
     if not executable:
@@ -342,23 +424,28 @@ def _warn_selected_tool_support(models: list[dict[str, Any]]) -> None:
     )
     print(
         "They may still chat, but Claude Code agent actions can fail. "
-        f"Run `clor check {unsupported[0]}` for a live tool round-trip.",
+        f"Run `clr check {unsupported[0]}` for a live tool round-trip.",
         file=sys.stderr,
     )
 
 
+def _note_openrouter_credential() -> None:
+    if not credential_path().exists():
+        print("note: no OpenRouter credential; showing Z.ai models only", file=sys.stderr)
+
+
 def command_index(*, as_json: bool) -> int:
     models = refresh_catalog()
+    _note_openrouter_credential()
     print_models(models, as_json=as_json)
     if not as_json:
         print(f"\nIndexed {len(models)} models in {catalog_path()}.", file=sys.stderr)
     return 0
 
 
-def command_search(
-    queries: list[str], *, regex: bool, tools_only: bool, as_json: bool
-) -> int:
+def command_search(queries: list[str], *, regex: bool, tools_only: bool, as_json: bool) -> int:
     models = refresh_catalog()
+    _note_openrouter_credential()
     matches = search_models(models, queries, regex=regex)
     if tools_only:
         matches = [model for model in matches if supports_tools(model)]
@@ -389,8 +476,11 @@ def _formatted_probe_estimate(model: dict[str, Any]) -> str:
 
 
 def _confirm_billable_check(model: dict[str, Any], *, assume_yes: bool) -> bool:
-    print(_formatted_probe_estimate(model))
-    print("Actual usage and provider charges may vary.")
+    if provider_of(str(model["id"])) == "zai":
+        print("Estimated charge: billed to your Z.ai Coding Plan quota.")
+    else:
+        print(_formatted_probe_estimate(model))
+        print("Actual usage and provider charges may vary.")
     confirmation_required = load_preferences().get("confirm_billable_checks", True)
     if assume_yes or confirmation_required is False:
         return True
@@ -406,7 +496,7 @@ def _confirm_billable_check(model: dict[str, Any], *, assume_yes: bool) -> bool:
             set_check_confirmation(False)
             print(
                 "Future checks will not ask. Restore prompts with "
-                "`clor config --check-confirmation ask`."
+                "`clr config --check-confirmation ask`."
             )
             return True
         if answer in {"", "n", "no"}:
@@ -422,7 +512,10 @@ def command_check(requested_model: str, *, assume_yes: bool) -> int:
             "tool checks are for non-Anthropic OpenRouter models; use Claude Code "
             "directly for built-in Claude models"
         )
-    model = exact_models(refresh_catalog(), [model_id])[0]
+    if provider_of(model_id) == "zai":
+        model = exact_models(merged_catalog([]), [model_id])[0]
+    else:
+        model = exact_models(refresh_catalog(), [model_id])[0]
     print(f"Model: {model_id}")
     print(f"Catalog: {tool_capability_badge(model, detailed=True)}")
     if not _confirm_billable_check(model, assume_yes=assume_yes):
@@ -464,17 +557,34 @@ def command_setup(
     ids: list[str] | None,
     anthropic_auth: str,
     anthropic_key_stdin: bool,
+    zai_key: bool,
+    zai_key_stdin: bool,
+    no_openrouter: bool,
     port: int,
 ) -> int:
-    key = _read_key(from_stdin=key_stdin)
-    if not no_validate:
-        validate_key(key)
-    models = refresh_catalog(key)
+    if zai_key and zai_key_stdin:
+        raise ValueError("use --zai-key or --zai-key-stdin, not both")
+    if no_openrouter and key_stdin:
+        raise ValueError("--no-openrouter cannot be combined with --key-stdin")
+    key: str | None = None
+    if no_openrouter:
+        models = merged_catalog([])
+    else:
+        key = _read_key(from_stdin=key_stdin)
+        if not no_validate:
+            validate_key(key)
+        models = refresh_catalog(key)
     selected = _choose_or_validate(models, ids)
     _warn_selected_tool_support(selected)
-    write_credential(key)
+    if key is not None:
+        write_credential(key)
     if anthropic_auth == "api":
         write_anthropic_credential(_read_anthropic_key(from_stdin=anthropic_key_stdin))
+    if zai_key or zai_key_stdin:
+        write_zai_credential(_read_zai_key(from_stdin=zai_key_stdin))
+    elif no_openrouter and not zai_credential_path().exists():
+        # Without an OpenRouter key the only useful favorites are Z.ai ones.
+        write_zai_credential(_read_zai_key(from_stdin=False))
     native_login = has_native_login()
     if anthropic_auth == "max" and not native_login:
         raise RuntimeError(
@@ -491,12 +601,18 @@ def command_setup(
     service = start_service(port)
     assert_private_files()
     _warn_claude_compatibility()
-    print(_styled("✓ Claude OpenRouter is ready", "1;32"))
+    print(_styled("✓ Claude Router is ready", "1;32"))
     print()
-    print(
-        f"{_styled('OpenRouter credential:', '1;36')} "
-        f"{_styled(credential_path(), '36')} {_styled('(mode 0600)', '2')}"
-    )
+    if credential_path().exists():
+        print(
+            f"{_styled('OpenRouter credential:', '1;36')} "
+            f"{_styled(credential_path(), '36')} {_styled('(mode 0600)', '2')}"
+        )
+    if zai_credential_path().exists():
+        print(
+            f"{_styled('Z.ai credential:', '1;36')} "
+            f"{_styled(zai_credential_path(), '36')} {_styled('(mode 0600)', '2')}"
+        )
     print(
         f"{_styled('Model index:', '1;36')} "
         f"{_styled(catalog_path(), '36')} {_styled(f'({len(models)} models)', '2')}"
@@ -521,7 +637,7 @@ def command_setup(
     print()
     print(
         f"{_styled('Next:', '1;33')} run {_styled('claude', '1;32')}, then use "
-        f"{_styled('/model', '1;35')} to switch between native and OpenRouter models."
+        f"{_styled('/model', '1;35')} to switch between native, OpenRouter, and Z.ai models."
     )
     return 0
 
@@ -578,17 +694,55 @@ def command_config(
     no_validate: bool,
     anthropic_auth: str | None,
     anthropic_key_stdin: bool,
+    zai_key: bool,
+    zai_key_stdin: bool,
+    cursor_key: bool,
+    cursor_key_stdin: bool,
     check_confirmation: str | None,
 ) -> int:
     if check_confirmation is not None:
-        if key_stdin or no_validate or anthropic_auth is not None or anthropic_key_stdin:
-            raise ValueError(
-                "configure billing-check confirmation separately from credentials"
-            )
+        if (
+            key_stdin
+            or no_validate
+            or anthropic_auth is not None
+            or anthropic_key_stdin
+            or zai_key
+            or zai_key_stdin
+        ):
+            raise ValueError("configure billing-check confirmation separately from credentials")
         required = check_confirmation == "ask"
         set_check_confirmation(required)
         state = "required" if required else "disabled"
         print(f"Billable model-check confirmation is now {state}.")
+        return 0
+    if zai_key or zai_key_stdin:
+        if key_stdin or no_validate or anthropic_auth is not None or anthropic_key_stdin:
+            raise ValueError(
+                "configure Z.ai and OpenRouter/Anthropic credentials in separate commands"
+            )
+        if zai_key and zai_key_stdin:
+            raise ValueError("use --zai-key or --zai-key-stdin, not both")
+        write_zai_credential(_read_zai_key(from_stdin=zai_key_stdin))
+        assert_private_files()
+        print(f"Z.ai credential updated: {zai_credential_path()} (mode 0600)")
+        return 0
+    if cursor_key or cursor_key_stdin:
+        if (
+            key_stdin
+            or no_validate
+            or anthropic_auth is not None
+            or anthropic_key_stdin
+            or zai_key
+            or zai_key_stdin
+        ):
+            raise ValueError(
+                "configure Cursor and OpenRouter/Anthropic/Z.ai credentials in separate commands"
+            )
+        if cursor_key and cursor_key_stdin:
+            raise ValueError("use --cursor-key or --cursor-key-stdin, not both")
+        write_cursor_credential(_read_cursor_key(from_stdin=cursor_key_stdin))
+        assert_private_files()
+        print(f"Cursor credential updated: {cursor_credential_path()} (mode 0600)")
         return 0
     if key_stdin and (anthropic_auth is not None or anthropic_key_stdin):
         raise ValueError("configure OpenRouter and Anthropic credentials in separate commands")
@@ -598,9 +752,7 @@ def command_config(
         auth = "api" if anthropic_key_stdin else anthropic_auth
         assert auth is not None
         if auth == "api":
-            write_anthropic_credential(
-                _read_anthropic_key(from_stdin=anthropic_key_stdin)
-            )
+            write_anthropic_credential(_read_anthropic_key(from_stdin=anthropic_key_stdin))
         preferences = load_preferences()
         ids = favorite_ids()
         if not ids:
@@ -668,6 +820,7 @@ def command_doctor(*, as_json: bool) -> int:
     port = preferences.get("router_port", DEFAULT_PORT)
     auth = preferences.get("anthropic_auth", "max")
     native_login = has_native_login()
+    favorites = favorite_ids()
     try:
         read_credential()
         openrouter_credential = True
@@ -678,13 +831,20 @@ def command_doctor(*, as_json: bool) -> int:
         anthropic_credential = True
     except RuntimeError:
         anthropic_credential = False
+    try:
+        read_zai_credential()
+        zai_credential = True
+    except RuntimeError:
+        zai_credential = False
+    zai_selected = any(provider_of(favorite) == "zai" for favorite in favorites)
+    openrouter_selected = any(provider_of(favorite) == "openrouter" for favorite in favorites)
     settings = read_json_object(claude_settings_path(), missing_ok=True)
     env = settings.get("env")
     settings_active = isinstance(env, dict) and env.get("ANTHROPIC_BASE_URL") == (
         f"http://127.0.0.1:{port}"
     )
     status = {
-        "configured": bool(favorite_ids()),
+        "configured": bool(favorites),
         "settings": settings_active,
         "router": healthcheck(port) if isinstance(port, int) else False,
         "router_url": f"http://127.0.0.1:{port}",
@@ -692,17 +852,17 @@ def command_doctor(*, as_json: bool) -> int:
         "native_login": native_login,
         "openrouter_credential": openrouter_credential,
         "anthropic_credential": anthropic_credential if auth == "api" else None,
+        "zai_credential": zai_credential,
     }
-    healthy = bool(
-        status["configured"]
-        and status["settings"]
-        and status["router"]
-        and status["openrouter_credential"]
-    )
+    healthy = bool(status["configured"] and status["settings"] and status["router"])
     if auth == "max":
         healthy = healthy and native_login
     elif auth == "api":
         healthy = healthy and anthropic_credential
+    if openrouter_selected:
+        healthy = healthy and openrouter_credential
+    if zai_selected:
+        healthy = healthy and zai_credential
     if as_json:
         print(json.dumps(status, indent=2))
     else:
@@ -715,6 +875,20 @@ def command_doctor(*, as_json: bool) -> int:
                 f"{auth} ({'logged in' if native_login else 'not logged in'})",
                 native_login if auth == "max" else anthropic_credential,
             ),
+            (
+                "OpenRouter credential",
+                (
+                    "configured"
+                    if openrouter_credential
+                    else ("missing" if openrouter_selected else "not needed")
+                ),
+                openrouter_credential or not openrouter_selected,
+            ),
+            (
+                "Z.ai credential",
+                "configured" if zai_credential else ("missing" if zai_selected else "not needed"),
+                zai_credential or not zai_selected,
+            ),
         ):
             color = "1;32" if ok else "1;31"
             print(f"{_styled(label + ':', '1;36')} {_styled(value, color)}")
@@ -724,11 +898,11 @@ def command_doctor(*, as_json: bool) -> int:
 def command_uninstall() -> int:
     command_reset()
     if remove_installed_package():
-        print("Uninstalled claude-openrouter.")
+        print("Uninstalled claude-router.")
     else:
         print(
             "Integration reset, but this install is not managed by uv or the curl installer. "
-            "Remove claude-openrouter with the package manager that installed it.",
+            "Remove claude-router with the package manager that installed it.",
             file=sys.stderr,
         )
     return 0
@@ -762,6 +936,9 @@ def main(argv: list[str] | None = None) -> int:
                 ids=args.models,
                 anthropic_auth=args.anthropic_auth,
                 anthropic_key_stdin=args.anthropic_key_stdin,
+                zai_key=args.zai_key,
+                zai_key_stdin=args.zai_key_stdin,
+                no_openrouter=args.no_openrouter,
                 port=args.port,
             )
         if args.command == "select":
@@ -772,6 +949,10 @@ def main(argv: list[str] | None = None) -> int:
                 no_validate=args.no_validate,
                 anthropic_auth=args.anthropic_auth,
                 anthropic_key_stdin=args.anthropic_key_stdin,
+                zai_key=args.zai_key,
+                zai_key_stdin=args.zai_key_stdin,
+                cursor_key=args.cursor_key,
+                cursor_key_stdin=args.cursor_key_stdin,
                 check_confirmation=args.check_confirmation,
             )
         if args.command == "doctor":

@@ -8,7 +8,124 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-OPENROUTER_MODEL_PREFIX = "clor/openrouter/"
+OPENROUTER_MODEL_PREFIX = "clr/openrouter/"
+ZAI_MODEL_PREFIX = "clr/zai/"
+CURSOR_MODEL_PREFIX = "clr/cursor/"
+# Claude Code's client-side context-budget marker. Upstreams receive the bare
+# id: Z.ai rejects the suffix with error 1211 (unknown model).
+CONTEXT_BUDGET_SUFFIX = "[1m]"
+
+# Static Z.ai Coding Plan catalog. OpenRouter model ids always contain a
+# slash, so these slash-free GLM ids can never collide with that namespace.
+ZAI_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "glm-5.3",
+        "name": "GLM-5.3",
+        "description": "Flagship GLM coding model with the deepest reasoning",
+        "provider": "zai",
+        "context_length": 1_000_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "glm-5.3-flash",
+        "name": "GLM-5.3 Flash",
+        "description": "Fast, low-latency GLM coding model for everyday tasks",
+        "provider": "zai",
+        "context_length": 1_000_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "glm-5.3-highspeed",
+        "name": "GLM-5.3 Highspeed",
+        "description": "High-speed GLM variant optimized for quick responses",
+        "provider": "zai",
+        "context_length": 1_000_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "glm-5.2",
+        "name": "GLM-5.2",
+        "description": "Previous-generation GLM flagship with dependable coding quality",
+        "provider": "zai",
+        "context_length": 1_000_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "glm-5-turbo",
+        "name": "GLM-5 Turbo",
+        "description": "Turbo GLM model balancing speed and capability",
+        "provider": "zai",
+        "context_length": 200_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "glm-4.7",
+        "name": "GLM-4.7",
+        "description": "Compact GLM model for lighter coding workloads",
+        "provider": "zai",
+        "context_length": 200_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+]
+ZAI_MODEL_IDS = frozenset(m["id"] for m in ZAI_MODELS)
+
+# Static Cursor Cloud Agents catalog. Model ids must match GET /v1/models on
+# api.cursor.com. Runs are agent tasks, so these entries honestly advertise
+# no Messages-API tool support.
+CURSOR_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "composer-2.5",
+        "name": "Composer 2.5",
+        "description": "Cursor's in-house frontier coding model",
+        "provider": "cursor",
+        "context_length": 1_000_000,
+        "supported_parameters": [],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "gpt-5.3-codex",
+        "name": "Codex 5.3",
+        "description": "OpenAI Codex 5.3 on Cursor Cloud Agents",
+        "provider": "cursor",
+        "context_length": 1_000_000,
+        "supported_parameters": [],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "cursor-grok-4.6-high",
+        "name": "Cursor Grok 4.6",
+        "description": "Grok 4.6 tuned by Cursor for coding",
+        "provider": "cursor",
+        "context_length": 1_000_000,
+        "supported_parameters": [],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "gemini-3.7-flash-high",
+        "name": "Gemini 3.7 Flash",
+        "description": "Fast Gemini 3.7 Flash on Cursor Cloud Agents",
+        "provider": "cursor",
+        "context_length": 1_000_000,
+        "supported_parameters": [],
+        "architecture": {"input_modalities": ["text"]},
+    },
+]
+CURSOR_MODEL_IDS = frozenset(m["id"] for m in CURSOR_MODELS)
+
+
+def provider_of(model_id: str) -> str:
+    """Return which route serves a bare catalog model id."""
+    if model_id in ZAI_MODEL_IDS:
+        return "zai"
+    if model_id in CURSOR_MODEL_IDS:
+        return "cursor"
+    return "openrouter"
 
 
 def supported_parameters(model: dict[str, Any]) -> frozenset[str] | None:
@@ -69,14 +186,31 @@ def catalog_input_modalities(
 
 
 def namespaced_model(model_id: str) -> str:
-    return f"{OPENROUTER_MODEL_PREFIX}{model_id}"
+    provider = provider_of(model_id)
+    prefix = {
+        "zai": ZAI_MODEL_PREFIX,
+        "cursor": CURSOR_MODEL_PREFIX,
+    }.get(provider, OPENROUTER_MODEL_PREFIX)
+    return f"{prefix}{model_id}"
 
 
 def original_model(model_id: str) -> str | None:
-    if not model_id.startswith(OPENROUTER_MODEL_PREFIX):
-        return None
-    original = model_id[len(OPENROUTER_MODEL_PREFIX) :]
-    return original or None
+    for prefix in (ZAI_MODEL_PREFIX, OPENROUTER_MODEL_PREFIX, CURSOR_MODEL_PREFIX):
+        if model_id.startswith(prefix):
+            original = model_id[len(prefix) :]
+            return original or None
+    return None
+
+
+def route_of_namespaced(model_id: str) -> str | None:
+    """Return the route a namespaced model id addresses, or ``None``."""
+    if model_id.startswith(ZAI_MODEL_PREFIX):
+        return "zai"
+    if model_id.startswith(OPENROUTER_MODEL_PREFIX):
+        return "openrouter"
+    if model_id.startswith(CURSOR_MODEL_PREFIX):
+        return "cursor"
+    return None
 
 
 def hybrid_openrouter_allowed(model_id: str) -> bool:
@@ -112,9 +246,7 @@ def search_models(
         def matches(model: dict[str, Any]) -> bool:
             fields = searchable_fields(model)
             return any(
-                pattern.search(field) is not None
-                for field in fields
-                for pattern in patterns
+                pattern.search(field) is not None for field in fields for pattern in patterns
             )
 
     else:
@@ -123,9 +255,7 @@ def search_models(
         def matches(model: dict[str, Any]) -> bool:
             fields = [field.casefold() for field in searchable_fields(model)]
             return any(
-                fnmatch.fnmatchcase(field, pattern)
-                for field in fields
-                for pattern in patterns
+                fnmatch.fnmatchcase(field, pattern) for field in fields for pattern in patterns
             )
 
     found = [model for model in models if matches(model)]
@@ -177,7 +307,7 @@ def exact_models(models: list[dict[str, Any]], ids: list[str]) -> list[dict[str,
             selected.append(model)
     if missing:
         rendered = ", ".join(missing)
-        raise ValueError(f"model not found in the current OpenRouter index: {rendered}")
+        raise ValueError(f"model not found in the current model index: {rendered}")
     if not selected:
         raise ValueError("select at least one model")
     return selected
@@ -194,30 +324,55 @@ def _price_per_million(value: Any) -> str | None:
 
 
 def picker_description(model: dict[str, Any]) -> str:
+    provider = provider_of(str(model.get("id", "")))
+    via = {
+        "zai": "Z.ai Coding Plan via claude-router",
+        "cursor": "Cursor Cloud Agents via claude-router",
+    }.get(provider, "OpenRouter via claude-router")
     parts = [
         str(model.get("id", "")),
-        "OpenRouter via claude-openrouter",
+        via,
         tool_capability_badge(model, detailed=True),
     ]
     context = model.get("context_length")
     if isinstance(context, int) and context > 0:
         parts.append(f"{context // 1000}K context" if context >= 1000 else f"{context} context")
-    pricing = model.get("pricing")
-    if isinstance(pricing, dict):
-        prompt = _price_per_million(pricing.get("prompt"))
-        completion = _price_per_million(pricing.get("completion"))
-        if prompt and completion:
-            parts.append(f"{prompt} input · {completion} output")
+    if provider == "openrouter":
+        pricing = model.get("pricing")
+        if isinstance(pricing, dict):
+            prompt = _price_per_million(pricing.get("prompt"))
+            completion = _price_per_million(pricing.get("completion"))
+            if prompt and completion:
+                parts.append(f"{prompt} input · {completion} output")
     return " · ".join(parts)[:240]
+
+
+def context_budget_suffix(model: dict[str, Any]) -> str:
+    """Return Claude Code's ``[1m]`` marker for catalog models with 1M context."""
+    context = model.get("context_length")
+    if isinstance(context, int) and context >= 1_000_000:
+        return CONTEXT_BUDGET_SUFFIX
+    return ""
+
+
+def namespaced_model_with_budget(model: dict[str, Any]) -> str:
+    """Namespaced model id carrying the context-budget marker when applicable."""
+    return namespaced_model(str(model["id"])) + context_budget_suffix(model)
 
 
 def picker_row(model: dict[str, Any], *, hybrid: bool = False) -> dict[str, str]:
     model_id = str(model["id"])
     name = model.get("name")
     label = name if isinstance(name, str) and name else model_id
+    suffix = {
+        "zai": " · Z.ai",
+        "cursor": " · Cursor",
+    }.get(provider_of(model_id), " · OpenRouter")
     return {
-        "model": namespaced_model(model_id) if hybrid else model_id,
-        "label": f"{label} · OpenRouter" if hybrid else label,
+        "model": (
+            namespaced_model_with_budget(model) if hybrid else model_id
+        ),
+        "label": f"{label}{suffix}" if hybrid else label,
         "description": picker_description(model),
     }
 

@@ -55,4 +55,3 @@ def read_json_object(path: Path, *, missing_ok: bool = False) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"expected a JSON object in {path}")
     return value
-

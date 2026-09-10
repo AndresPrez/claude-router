@@ -9,9 +9,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from claude_openrouter.openrouter import write_credential
-from claude_openrouter.paths import anthropic_credential_path
-from claude_openrouter.proxy import (
+from claude_router.models import ZAI_MODEL_IDS
+from claude_router.openrouter import write_credential
+from claude_router.paths import anthropic_credential_path
+from claude_router.proxy import (
     LOCAL_TOKEN_HEADER,
     HybridRouterServer,
     _filter_gemini_sse_event,
@@ -20,12 +21,15 @@ from claude_openrouter.proxy import (
     classify_model,
     route_payload,
 )
-from claude_openrouter.storage import atomic_write_text
+from claude_router.storage import atomic_write_text
+from claude_router.zai import write_zai_credential
 
 OPENROUTER_KEY = "sk-or-v1-this-is-a-fake-test-key"
 ANTHROPIC_KEY = "sk-ant-this-is-a-fake-test-key"
+ZAI_KEY = "zai-coding-plan-test-key-0123456789"
 LOCAL_TOKEN = "local-router-test-token"
 GLM = "z-ai/glm-5.3-flash"
+ZAI = "glm-5.3-flash"
 DEEPSEEK = "~deepseek/deepseek-v4-flash-latest"
 GEMINI = "google/gemini-3.8-flash"
 STREAM_FIRST = b"data: first\n\n"
@@ -81,6 +85,7 @@ class StreamingUpstream(BaseHTTPRequestHandler):
 def routing_servers(isolated_home):
     write_credential(OPENROUTER_KEY)
     atomic_write_text(anthropic_credential_path(), f"{ANTHROPIC_KEY}\n", 0o600)
+    write_zai_credential(ZAI_KEY)
     RecordingUpstream.requests = []
     upstream = ThreadingHTTPServer(("127.0.0.1", 0), RecordingUpstream)
     upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
@@ -89,10 +94,11 @@ def routing_servers(isolated_home):
     router = HybridRouterServer(
         ("127.0.0.1", 0),
         local_token=LOCAL_TOKEN,
-        favorites={GLM, GEMINI},
+        favorites={GLM, GEMINI, ZAI},
         anthropic_auth="max",
         anthropic_upstream=f"{base}/anthropic",
         openrouter_upstream=f"{base}/openrouter",
+        zai_upstream=f"{base}/zai",
     )
     router_thread = threading.Thread(target=router.serve_forever, daemon=True)
     router_thread.start()
@@ -134,7 +140,7 @@ def request(
 
 
 def test_openrouter_route_strips_cross_provider_credentials(routing_servers) -> None:
-    with request(routing_servers, f"clor/openrouter/{GLM}") as response:
+    with request(routing_servers, f"clr/openrouter/{GLM}") as response:
         assert response.status == 200
     captured = RecordingUpstream.requests[-1]
     assert captured["path"] == "/openrouter/v1/messages"
@@ -150,18 +156,34 @@ def test_gemini_route_strips_claude_beta_header(routing_servers) -> None:
     beta = "claude-code-20250219,interleaved-thinking-2025-05-14,effort-2025-11-24"
     with request(
         routing_servers,
-        f"clor/openrouter/{GEMINI}",
+        f"clr/openrouter/{GEMINI}",
         extra_headers={"Anthropic-Beta": beta},
     ) as response:
         assert response.status == 200
     assert "anthropic-beta" not in RecordingUpstream.requests[-1]["headers"]
 
 
+def test_zai_route_uses_zai_upstream_and_only_the_zai_key(routing_servers) -> None:
+    with request(routing_servers, f"clr/zai/{ZAI}") as response:
+        assert response.status == 200
+    captured = RecordingUpstream.requests[-1]
+    assert captured["path"] == "/zai/v1/messages"
+    assert captured["body"]["model"] == ZAI  # type: ignore[index]
+    headers = captured["headers"]
+    assert headers["authorization"] == f"Bearer {ZAI_KEY}"  # type: ignore[index]
+    assert "x-api-key" not in headers
+    assert "http-referer" not in headers
+    assert "x-title" not in headers
+    assert OPENROUTER_KEY not in json.dumps(captured)
+    assert ANTHROPIC_KEY not in json.dumps(captured)
+    assert "max-oauth" not in json.dumps(captured)
+
+
 def test_non_gemini_route_preserves_claude_beta_header(routing_servers) -> None:
     beta = "claude-code-20250219,interleaved-thinking-2025-05-14"
     with request(
         routing_servers,
-        f"clor/openrouter/{GLM}",
+        f"clr/openrouter/{GLM}",
         extra_headers={"Anthropic-Beta": beta},
     ) as response:
         assert response.status == 200
@@ -188,7 +210,7 @@ def test_openrouter_stream_is_forwarded_before_upstream_finishes(isolated_home) 
     result: list[bytes] = []
 
     def consume() -> None:
-        with request(router, f"clor/openrouter/{GLM}") as response:
+        with request(router, f"clr/openrouter/{GLM}") as response:
             result.append(response.read(len(STREAM_FIRST)))
             received.set()
             result.append(response.read())
@@ -223,7 +245,7 @@ def test_native_route_preserves_oauth_and_never_uses_openrouter_key(routing_serv
 
 
 def test_unknown_and_unfavorited_models_fail_closed(routing_servers) -> None:
-    for model in ("google/gemini", "clor/openrouter/not/selected"):
+    for model in ("google/gemini", "clr/openrouter/not/selected"):
         with pytest.raises(urllib.error.HTTPError) as rejected:
             request(routing_servers, model)
         assert rejected.value.code == 400
@@ -284,17 +306,124 @@ def test_router_bind_does_not_wait_for_reverse_dns(isolated_home, monkeypatch) -
 
 def test_model_classification_is_explicit() -> None:
     assert classify_model("claude-opus-5", {GLM}) == ("anthropic", "claude-opus-5")
-    assert classify_model(f"clor/openrouter/{GLM}", {GLM}) == ("openrouter", GLM)
+    assert classify_model(f"clr/openrouter/{GLM}", {GLM}) == ("openrouter", GLM)
+    assert classify_model(f"clr/zai/{ZAI}", {ZAI}) == ("zai", ZAI)
     with pytest.raises(ValueError, match="no trusted route"):
         classify_model(GLM, {GLM})
     with pytest.raises(ValueError, match="blocked on the OpenRouter route"):
-        classify_model("clor/openrouter/anthropic/claude-opus-5", {"anthropic/claude-opus-5"})
+        classify_model("clr/openrouter/anthropic/claude-opus-5", {"anthropic/claude-opus-5"})
+
+
+def test_zai_classification_requires_the_favorites_allowlist() -> None:
+    assert ZAI in ZAI_MODEL_IDS
+    assert classify_model(f"clr/zai/{ZAI}", {ZAI}) == ("zai", ZAI)
+    with pytest.raises(ValueError, match="Z.ai model is not in the clr favorites allowlist"):
+        classify_model(f"clr/zai/{ZAI}", set())
+
+
+def test_zai_route_payload_rewrites_model_and_keeps_other_fields() -> None:
+    payload = {
+        "model": f"clr/zai/{ZAI}",
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {ZAI})
+    routed = json.loads(body)
+
+    assert (route, model, routed["model"]) == ("zai", ZAI, ZAI)
+    assert routed["max_tokens"] == 128
+    assert routed["messages"] == payload["messages"]
+
+
+def test_zai_route_strips_unicode_property_class_patterns() -> None:
+    payload = {
+        "model": f"clr/zai/{ZAI}",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [
+            {
+                "name": "artifact",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "field": {
+                            "type": "string",
+                            "pattern": "^[^\\p{Cc}]+$",
+                            "description": "untouched",
+                        },
+                        "plain": {"type": "string", "pattern": "^[a-z]+$"},
+                    },
+                },
+            }
+        ],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {ZAI})
+    routed = json.loads(body)
+    props = routed["tools"][0]["input_schema"]["properties"]
+
+    assert (route, model) == ("zai", ZAI)
+    assert "pattern" not in props["field"]
+    assert props["field"]["description"] == "untouched"
+    assert props["plain"]["pattern"] == "^[a-z]+$"
+
+
+def test_non_zai_route_keeps_unicode_property_class_patterns() -> None:
+    payload = {
+        "model": f"clr/openrouter/{GLM}",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [
+            {
+                "name": "artifact",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "field": {"type": "string", "pattern": "^[^\\p{Cc}]+$"},
+                    },
+                },
+            }
+        ],
+    }
+
+    _, _, body = route_payload(json.dumps(payload).encode(), {GLM})
+    routed = json.loads(body)
+
+    pattern = routed["tools"][0]["input_schema"]["properties"]["field"]["pattern"]
+    assert pattern == "^[^\\p{Cc}]+$"
+
+
+def test_zai_text_only_modality_handling_matches_openrouter() -> None:
+    payload = {
+        "model": f"clr/zai/{ZAI}",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+                    }
+                ],
+            }
+        ],
+    }
+
+    route, model, body = route_payload(
+        json.dumps(payload).encode(), {ZAI}, {ZAI: frozenset({"text"})}
+    )
+    routed = json.loads(body)
+
+    assert (route, model) == ("zai", ZAI)
+    replacement = routed["messages"][0]["content"][0]
+    assert replacement["type"] == "text"
+    assert "InputError[unsupported_input_modality]" in replacement["text"]
+    assert '"data":"abc"' not in body.decode()
 
 
 def test_text_only_model_receives_capability_notice_and_failed_image_tool_result() -> None:
     image_data = "must-not-reach-openrouter"
     payload = {
-        "model": f"clor/openrouter/{DEEPSEEK}",
+        "model": f"clr/openrouter/{DEEPSEEK}",
         "system": [{"type": "text", "text": "You are a coding agent."}],
         "messages": [
             {
@@ -352,7 +481,7 @@ def test_text_only_model_receives_capability_notice_and_failed_image_tool_result
 
 def test_text_only_model_replaces_direct_image_with_categorized_input_error() -> None:
     payload = {
-        "model": f"clor/openrouter/{DEEPSEEK}",
+        "model": f"clr/openrouter/{DEEPSEEK}",
         "messages": [
             {
                 "role": "user",
@@ -381,7 +510,7 @@ def test_text_only_model_replaces_direct_image_with_categorized_input_error() ->
 
 def test_vision_model_keeps_image_payload_unchanged() -> None:
     payload = {
-        "model": f"clor/openrouter/{GLM}",
+        "model": f"clr/openrouter/{GLM}",
         "messages": [
             {
                 "role": "user",
@@ -408,7 +537,7 @@ def test_vision_model_keeps_image_payload_unchanged() -> None:
 
 def test_gemini_route_repairs_nested_itemless_tool_arrays() -> None:
     payload = {
-        "model": f"clor/openrouter/{GEMINI}",
+        "model": f"clr/openrouter/{GEMINI}",
         "thinking": {"type": "adaptive", "display": "omitted"},
         "output_config": {"effort": "high"},
         "messages": [{"role": "user", "content": "hello"}],
@@ -435,9 +564,7 @@ def test_gemini_route_repairs_nested_itemless_tool_arrays() -> None:
 
     route, model, body = route_payload(json.dumps(payload).encode(), {GEMINI})
     routed = json.loads(body)
-    where = routed["tools"][0]["input_schema"]["properties"]["query"][
-        "properties"
-    ]["where"]
+    where = routed["tools"][0]["input_schema"]["properties"]["query"]["properties"]["where"]
 
     assert (route, model, routed["model"]) == ("openrouter", GEMINI, GEMINI)
     assert "thinking" not in routed
@@ -447,7 +574,7 @@ def test_gemini_route_repairs_nested_itemless_tool_arrays() -> None:
 
 def test_non_gemini_route_keeps_open_ended_tool_schema() -> None:
     payload = {
-        "model": f"clor/openrouter/{GLM}",
+        "model": f"clr/openrouter/{GLM}",
         "thinking": {"type": "adaptive", "display": "omitted"},
         "output_config": {"effort": "high"},
         "messages": [{"role": "user", "content": "hello"}],
@@ -485,9 +612,7 @@ def test_gemini_sse_filter_removes_thinking_block_and_signature() -> None:
     ]
     thinking_indexes: set[int] = set()
 
-    filtered = b"".join(
-        _filter_gemini_sse_event(event, thinking_indexes) for event in events
-    )
+    filtered = b"".join(_filter_gemini_sse_event(event, thinking_indexes) for event in events)
 
     assert b'"text":"hello"' in filtered
     assert b'"index":0' in filtered
@@ -519,3 +644,28 @@ def test_gemini_non_streaming_response_drops_thinking_content() -> None:
     normalized = json.loads(_remove_gemini_thinking_content(body))
 
     assert normalized["content"] == [{"type": "text", "text": "hello"}]
+
+
+def test_zai_route_strips_context_budget_suffix() -> None:
+    payload = {
+        "model": f"clr/zai/{ZAI}[1m]",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {ZAI})
+    routed = json.loads(body)
+
+    assert (route, model, routed["model"]) == ("zai", ZAI, ZAI)
+
+
+def test_openrouter_route_strips_context_budget_suffix() -> None:
+    payload = {
+        "model": f"clr/openrouter/{GLM}[1m]",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {GLM})
+    routed = json.loads(body)
+
+    assert (route, model, routed["model"]) == ("openrouter", GLM, GLM)

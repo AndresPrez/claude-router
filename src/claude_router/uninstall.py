@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-PACKAGE_NAME = "claude-openrouter"
+PACKAGE_NAME = "claude-router"
 
 
 def _fallback_tool_dir() -> Path:
@@ -29,7 +29,7 @@ def _remove_fallback_install() -> bool:
         running_inside = False
     if not tool_dir.exists() and not running_inside:
         return False
-    for command in ("claude-openrouter", "clor"):
+    for command in ("claude-router", "clr"):
         link = _bin_dir() / command
         if link.is_symlink() and tool_dir.resolve() in link.resolve().parents:
             link.unlink()
@@ -50,10 +50,8 @@ def remove_installed_package() -> bool:
             capture_output=True,
             text=True,
         )
-        if re.search(r"(?m)^claude-openrouter\s+v", listing.stdout):
-            removed = subprocess.run(
-                [uv, "tool", "uninstall", PACKAGE_NAME], check=False
-            )
+        if re.search(r"(?m)^claude-router\s+v", listing.stdout):
+            removed = subprocess.run([uv, "tool", "uninstall", PACKAGE_NAME], check=False)
             return removed.returncode == 0
     pipx = shutil.which("pipx")
     if pipx:
@@ -63,7 +61,7 @@ def remove_installed_package() -> bool:
             capture_output=True,
             text=True,
         )
-        if re.search(r"(?m)^claude-openrouter\s", listing.stdout):
+        if re.search(r"(?m)^claude-router\s", listing.stdout):
             removed = subprocess.run([pipx, "uninstall", PACKAGE_NAME], check=False)
             return removed.returncode == 0
     # Plain pip and development installs are intentionally not guessed: removing
