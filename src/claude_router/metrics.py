@@ -67,6 +67,16 @@ def extract_usage_event(record: dict[str, Any], raw_event: bytes) -> None:
             usage = document.get("usage")
             if isinstance(usage, dict):
                 record["output_tokens"] = _count(usage.get("output_tokens"))
+                # Z.ai reports the final cumulative input/cache usage here
+                # instead of message_start; only overwrite present values.
+                for field, key in (
+                    ("input_tokens", "input_tokens"),
+                    ("cache_read_tokens", "cache_read_input_tokens"),
+                    ("cache_creation_tokens", "cache_creation_input_tokens"),
+                ):
+                    value = usage.get(key)
+                    if isinstance(value, int) and value > 0:
+                        record[field] = value
             if record["input_tokens"] is None:
                 record["input_tokens"] = 0
 

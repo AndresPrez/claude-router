@@ -174,3 +174,23 @@ def test_rotation_rewrites_old_file(tmp_path, monkeypatch) -> None:
     lines = metrics_path.read_text().strip().splitlines()
     rotated_lines = len(rotated.read_text().strip().splitlines()) if rotated.exists() else 0
     assert len(lines) + rotated_lines == 5
+
+
+def test_extract_usage_reads_cumulative_message_delta() -> None:
+    """Z.ai reports final input/cache usage in message_delta, unlike Anthropic."""
+    record = metrics_module.new_record("zai", "glm-5.3-flash")
+
+    extract_usage_event(
+        record,
+        b'event: message_start\ndata: {"type":"message_start","message":{"usage":'
+        b'{"input_tokens":0,"cache_read_input_tokens":0}}}\n\n',
+    )
+    extract_usage_event(
+        record,
+        b'event: message_delta\ndata: {"type":"message_delta","usage":'
+        b'{"input_tokens":15,"output_tokens":8,"cache_read_input_tokens":2240}}\n\n',
+    )
+
+    assert record["input_tokens"] == 15
+    assert record["output_tokens"] == 8
+    assert record["cache_read_tokens"] == 2240
