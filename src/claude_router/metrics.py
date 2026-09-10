@@ -175,8 +175,9 @@ def _rotate_if_needed(path: Path, incoming: int) -> None:
         pass
 
 
-def load_records(days: int) -> list[dict[str, Any]]:
+def load_records(days: int, model_filter: str | None = None) -> list[dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    needle = model_filter.casefold() if model_filter else None
     records: list[dict[str, Any]] = []
     path = metrics_path()
     for candidate in (path.with_suffix(".jsonl.1"), path):
@@ -202,6 +203,8 @@ def load_records(days: int) -> list[dict[str, Any]]:
                             continue
                     except ValueError:
                         pass
+                if needle and needle not in str(record.get("model", "")).casefold():
+                    continue
                 records.append(record)
     return records
 
@@ -291,8 +294,8 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {"models": models, "totals": totals}
 
 
-def format_summary(days: int) -> str:
-    records = load_records(days)
+def format_summary(days: int, model_filter: str | None = None) -> str:
+    records = load_records(days, model_filter)
     if not records:
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
     summary = summarize(records)
@@ -318,9 +321,12 @@ def format_summary(days: int) -> str:
     return "\n".join(lines)
 
 
-def format_histogram(days: int) -> str:
+def format_histogram(days: int, model_filter: str | None = None) -> str:
     """Render requests per hour as an ASCII histogram segmented by route."""
     records = load_records(days)
+    if model_filter:
+        needle = model_filter.casefold()
+        records = [r for r in records if needle in str(r.get("model", "")).casefold()]
     if not records:
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
 
@@ -349,8 +355,9 @@ def format_histogram(days: int) -> str:
     )
     scale = max(busiest, 1) / width
 
+    scope = f" — model ~{model_filter}" if model_filter else ""
     lines = [
-        f"Requests per hour — last {days} day(s) — {len(records)} total",
+        f"Requests per hour — last {days} day(s) — {len(records)} total{scope}",
         "",
         f"{'hour':<12} {'req':>4} {'err':>4}  {'distribution':<50} "
         f"{'med tok/s':>9} {'med ttft':>9}",

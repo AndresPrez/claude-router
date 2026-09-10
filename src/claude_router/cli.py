@@ -187,6 +187,9 @@ def parser() -> argparse.ArgumentParser:
     metrics.add_argument(
         "--histogram", action="store_true", help="requests per hour, segmented by route"
     )
+    metrics.add_argument(
+        "--model", help="filter to models whose id contains this substring"
+    )
 
     config = commands.add_parser("config", help="change credentials and CLI preferences")
     config.add_argument("--key-stdin", action="store_true", help="read the key from stdin")
@@ -968,14 +971,14 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "metrics":
             if args.histogram:
-                print(format_histogram(args.days))
+                print(format_histogram(args.days, args.model))
                 return 0
             if args.json:
                 import json as _json
 
-                print(_json.dumps(summarize_metrics(load_records(args.days)), indent=2))
+                print(_json.dumps(summarize_metrics(load_records(args.days, args.model)), indent=2))
             else:
-                print(format_summary(args.days))
+                print(format_summary(args.days, args.model))
             return 0
         if args.command == "doctor":
             return command_doctor(as_json=args.json)
