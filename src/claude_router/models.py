@@ -11,6 +11,9 @@ from typing import Any
 OPENROUTER_MODEL_PREFIX = "clr/openrouter/"
 ZAI_MODEL_PREFIX = "clr/zai/"
 CURSOR_MODEL_PREFIX = "clr/cursor/"
+# Claude Code's client-side context-budget marker. Upstreams receive the bare
+# id: Z.ai rejects the suffix with error 1211 (unknown model).
+CONTEXT_BUDGET_SUFFIX = "[1m]"
 
 # Static Z.ai Coding Plan catalog. OpenRouter model ids always contain a
 # slash, so these slash-free GLM ids can never collide with that namespace.

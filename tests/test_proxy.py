@@ -644,3 +644,28 @@ def test_gemini_non_streaming_response_drops_thinking_content() -> None:
     normalized = json.loads(_remove_gemini_thinking_content(body))
 
     assert normalized["content"] == [{"type": "text", "text": "hello"}]
+
+
+def test_zai_route_strips_context_budget_suffix() -> None:
+    payload = {
+        "model": f"clr/zai/{ZAI}[1m]",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {ZAI})
+    routed = json.loads(body)
+
+    assert (route, model, routed["model"]) == ("zai", ZAI, ZAI)
+
+
+def test_openrouter_route_strips_context_budget_suffix() -> None:
+    payload = {
+        "model": f"clr/openrouter/{GLM}[1m]",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {GLM})
+    routed = json.loads(body)
+
+    assert (route, model, routed["model"]) == ("openrouter", GLM, GLM)

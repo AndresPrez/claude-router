@@ -24,6 +24,7 @@ from .cursor import (
     run_messages,
 )
 from .models import (
+    CONTEXT_BUDGET_SUFFIX,
     OPENROUTER_MODEL_PREFIX,
     catalog_input_modalities,
     exact_models,
@@ -316,6 +317,8 @@ def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
     """Return ``(route, upstream_model)`` or reject an ambiguous model."""
     bare_model = original_model(model)
     if bare_model is not None:
+        if bare_model.endswith(CONTEXT_BUDGET_SUFFIX):
+            bare_model = bare_model[: -len(CONTEXT_BUDGET_SUFFIX)]
         if route_of_namespaced(model) == "zai":
             if bare_model not in favorites:
                 raise ValueError("Z.ai model is not in the clr favorites allowlist")
