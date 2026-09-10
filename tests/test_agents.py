@@ -19,7 +19,11 @@ def test_managed_agents_expose_each_exact_openrouter_favorite(isolated_home, sam
     routes = sync_managed_agents(selected)
 
     assert routes == {
-        agent_name(model["id"]): f"clr/openrouter/{model['id']}" for model in selected
+        agent_name(model["id"]): (
+            f"clr/openrouter/{model['id']}"
+            + ("[1m]" if model["context_length"] >= 1_000_000 else "")
+        )
+        for model in selected
     }
     manifest = json.loads(agent_manifest_path().read_text())
     assert set(manifest["agents"]) == set(routes)
@@ -36,7 +40,7 @@ def test_zai_agents_describe_the_zai_route(isolated_home) -> None:
 
     routes = sync_managed_agents([zai_model])
 
-    assert routes == {agent_name("glm-5.3-flash"): "clr/zai/glm-5.3-flash"}
+    assert routes == {agent_name("glm-5.3-flash"): "clr/zai/glm-5.3-flash[1m]"}
     document = (claude_agents_dir() / f"{agent_name('glm-5.3-flash')}.md").read_text()
     assert MANAGED_MARKER in document
     assert "exact Z.ai model GLM-5.3 Flash" in document

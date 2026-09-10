@@ -107,8 +107,8 @@ def test_configure_with_zai_favorite_requires_a_zai_credential_and_namespaces_th
     settings = read_json(claude_settings_path())
     rows = settings["modelPicker"]["options"]
     assert [row["model"] for row in rows] == [
-        "clr/openrouter/google/gemini-3.1-pro-preview",
-        "clr/zai/glm-5.3-flash",
+        "clr/openrouter/google/gemini-3.1-pro-preview[1m]",
+        "clr/zai/glm-5.3-flash[1m]",
     ]
     zai_row = rows[-1]
     assert zai_row["label"] == "GLM-5.3 Flash · Z.ai"
@@ -167,7 +167,7 @@ def test_configure_makes_plain_claude_use_openrouter_and_preserves_native_auth(
     assert result == claude_settings_path()
     settings = read_json(claude_settings_path())
     assert settings["theme"] == "dark"
-    assert settings["model"] == "clr/openrouter/google/gemini-3.1-pro-preview"
+    assert settings["model"] == "clr/openrouter/google/gemini-3.1-pro-preview[1m]"
     assert "apiKeyHelper" not in settings
     assert settings["env"] == {
         "KEEP": "yes",
@@ -177,11 +177,11 @@ def test_configure_makes_plain_claude_use_openrouter_and_preserves_native_auth(
         "ANTHROPIC_CUSTOM_HEADERS": (
             f"X-Trace: yes\nX-Claude-Router-Token: {router_token_path().read_text().strip()}"
         ),
-        "ENABLE_TOOL_SEARCH": "false",
+        "ENABLE_TOOL_SEARCH": "true",
     }
     assert settings["modelPicker"]["replaceBuiltInOptions"] is False
     assert [row["model"] for row in settings["modelPicker"]["options"]] == [
-        "clr/openrouter/google/gemini-3.1-pro-preview",
+        "clr/openrouter/google/gemini-3.1-pro-preview[1m]",
         "clr/openrouter/qwen/qwen3-coder",
     ]
     pre_tool_use = settings["hooks"]["PreToolUse"]
@@ -250,7 +250,7 @@ def test_router_startup_upgrades_v3_backup_before_adding_subagent_hook(
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_AUTH_TOKEN": "",
             "ANTHROPIC_CUSTOM_HEADERS": "X-Claude-Router-Token: old",
-            "ENABLE_TOOL_SEARCH": "false",
+            "ENABLE_TOOL_SEARCH": "true",
         },
     }
     write_json(claude_settings_path(), current)
@@ -374,7 +374,7 @@ def test_configure_migrates_legacy_global_settings_from_backup(
         "ANTHROPIC_CUSTOM_HEADERS": (
             f"X-Claude-Router-Token: {router_token_path().read_text().strip()}"
         ),
-        "ENABLE_TOOL_SEARCH": "false",
+        "ENABLE_TOOL_SEARCH": "true",
     }
     assert read_json(backup_path())["version"] == 4
     assert not helper_path().exists()
@@ -429,7 +429,7 @@ def test_configure_cleans_recognizable_legacy_settings_without_backup(
         "ANTHROPIC_CUSTOM_HEADERS": (
             f"X-Claude-Router-Token: {router_token_path().read_text().strip()}"
         ),
-        "ENABLE_TOOL_SEARCH": "false",
+        "ENABLE_TOOL_SEARCH": "true",
     }
 
     reset_integration()

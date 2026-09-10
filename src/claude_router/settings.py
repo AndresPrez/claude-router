@@ -14,7 +14,11 @@ from .agents import (
     remove_managed_agents,
     sync_managed_agents,
 )
-from .models import hybrid_openrouter_allowed, namespaced_model, picker_row
+from .models import (
+    hybrid_openrouter_allowed,
+    namespaced_model_with_budget,
+    picker_row,
+)
 from .paths import (
     anthropic_credential_path,
     backup_path,
@@ -295,7 +299,9 @@ def configure_claude(
     old_default = old_preferences.get("default_model")
     ids = [str(model["id"]) for model in models]
     default_id = old_default if isinstance(old_default, str) and old_default in ids else ids[0]
-    default_model = namespaced_model(default_id)
+    default_model = namespaced_model_with_budget(
+        next(model for model in models if str(model["id"]) == default_id)
+    )
 
     settings.pop("apiKeyHelper", None)
     env = dict(existing_env or {})
@@ -315,9 +321,14 @@ def configure_claude(
         # Claude login. Native Claude routes still reject this local-only token.
         env["ANTHROPIC_AUTH_TOKEN"] = token
         env["ANTHROPIC_CUSTOM_HEADERS"] = _router_headers(previous_headers, token)
-    # Deferred tool loading is currently rejected by non-Anthropic models in
-    # Agent View. Connectors remain authenticated; their tools load eagerly.
-    env["ENABLE_TOOL_SEARCH"] = "false"
+    # Deferred tool loading used to be rejected by non-Anthropic upstreams;
+    # the Z.ai route now strips the offending schema patterns (verified live),
+    # so deferred loading is safe and saves ~100k tokens with large tool sets.
+    # A pre-existing explicit value is preserved.
+    existing_search = env.get("ENABLE_TOOL_SEARCH")
+    env["ENABLE_TOOL_SEARCH"] = (
+        existing_search if isinstance(existing_search, str) and existing_search else "true"
+    )
     settings["env"] = env
     settings["modelPicker"] = {
         "options": [picker_row(model, hybrid=True) for model in models],

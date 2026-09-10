@@ -162,7 +162,7 @@ def test_zai_picker_row_labels_and_describe_the_coding_plan_without_pricing() ->
     glm = next(model for model in ZAI_MODELS if model["id"] == "glm-5.3-flash")
     row = picker_row(glm, hybrid=True)
 
-    assert row["model"] == "clr/zai/glm-5.3-flash"
+    assert row["model"] == "clr/zai/glm-5.3-flash[1m]"
     assert row["label"] == "GLM-5.3 Flash · Z.ai"
     assert "Z.ai Coding Plan via claude-router" in row["description"]
     assert "$" not in row["description"]

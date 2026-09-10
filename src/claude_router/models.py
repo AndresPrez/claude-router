@@ -347,6 +347,19 @@ def picker_description(model: dict[str, Any]) -> str:
     return " · ".join(parts)[:240]
 
 
+def context_budget_suffix(model: dict[str, Any]) -> str:
+    """Return Claude Code's ``[1m]`` marker for catalog models with 1M context."""
+    context = model.get("context_length")
+    if isinstance(context, int) and context >= 1_000_000:
+        return CONTEXT_BUDGET_SUFFIX
+    return ""
+
+
+def namespaced_model_with_budget(model: dict[str, Any]) -> str:
+    """Namespaced model id carrying the context-budget marker when applicable."""
+    return namespaced_model(str(model["id"])) + context_budget_suffix(model)
+
+
 def picker_row(model: dict[str, Any], *, hybrid: bool = False) -> dict[str, str]:
     model_id = str(model["id"])
     name = model.get("name")
@@ -356,7 +369,9 @@ def picker_row(model: dict[str, Any], *, hybrid: bool = False) -> dict[str, str]
         "cursor": " · Cursor",
     }.get(provider_of(model_id), " · OpenRouter")
     return {
-        "model": namespaced_model(model_id) if hybrid else model_id,
+        "model": (
+            namespaced_model_with_budget(model) if hybrid else model_id
+        ),
         "label": f"{label}{suffix}" if hybrid else label,
         "description": picker_description(model),
     }

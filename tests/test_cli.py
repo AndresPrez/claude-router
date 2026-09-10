@@ -289,7 +289,9 @@ def test_setup_no_openrouter_configures_zai_only_favorites(
     assert zai_credential_path().read_text().strip() == ZAI_KEY
     assert not credential_path().exists()
     settings = json.loads(claude_settings_path().read_text())
-    assert [row["model"] for row in settings["modelPicker"]["options"]] == ["clr/zai/glm-5.3-flash"]
+    assert [row["model"] for row in settings["modelPicker"]["options"]] == [
+        "clr/zai/glm-5.3-flash[1m]"
+    ]
     output = capsys.readouterr().out
     assert "OpenRouter credential:" not in output
     assert f"Z.ai credential: {zai_credential_path()} (mode 0600)" in output

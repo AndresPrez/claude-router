@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .models import namespaced_model, provider_of
+from .models import context_budget_suffix, namespaced_model, provider_of
 from .paths import agent_manifest_path, claude_agents_dir
 from .storage import atomic_write_json, atomic_write_text, read_json_object
 
@@ -41,7 +41,7 @@ def _agent_document(model: dict[str, Any], name: str) -> str:
     return f"""---
 name: {json.dumps(name)}
 description: {json.dumps(description)}
-model: {json.dumps(namespaced_model(model_id))}
+model: {json.dumps(namespaced_model(model_id) + context_budget_suffix(model))}
 ---
 
 {MANAGED_MARKER}
@@ -119,7 +119,7 @@ def sync_managed_agents(models: list[dict[str, Any]]) -> dict[str, str]:
         if path.exists() and MANAGED_MARKER not in path.read_text(encoding="utf-8"):
             raise RuntimeError(f"refusing to replace non-clr Claude subagent: {path}")
         atomic_write_text(path, _agent_document(model, name), 0o600)
-        route = namespaced_model(model_id)
+        route = namespaced_model(model_id) + context_budget_suffix(model)
         entries[name] = {"file": filename, "model": route}
         routes[name] = route
 
