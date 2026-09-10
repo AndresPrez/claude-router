@@ -1,0 +1,315 @@
+"""Request metrics for the hybrid router.
+
+One JSONL record per request in the state directory (``metrics.jsonl``,
+rotated at 10 MB). Records carry route, model, timing (duration, time to
+first byte), token usage, and cache counters as reported by upstreams —
+Z.ai and OpenRouter report usage inline in the response stream; the Cursor
+bridge fetches it from the usage endpoint after a run.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from .paths import metrics_path
+
+MAX_METRICS_BYTES = 10 * 1024 * 1024
+_MAX_JSON_TEE_BYTES = 4 * 1024 * 1024
+_WRITE_LOCK = threading.Lock()
+
+
+def new_record(route: str, model: str) -> dict[str, Any]:
+    return {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "route": route,
+        "model": model,
+        "stream": None,
+        "status": None,
+        "error": None,
+        "duration_ms": None,
+        "ttft_ms": None,
+        "input_tokens": None,
+        "output_tokens": None,
+        "cache_read_tokens": None,
+        "cache_creation_tokens": None,
+        "tokens_per_sec": None,
+    }
+
+
+def extract_usage_event(record: dict[str, Any], raw_event: bytes) -> None:
+    """Update ``record`` in place from one upstream SSE event ( Anthropic shape)."""
+    for line in raw_event.decode("utf-8", errors="replace").splitlines():
+        if not line.startswith("data:"):
+            continue
+        try:
+            document = json.loads(line[5:].strip())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(document, dict):
+            continue
+        kind = document.get("type")
+        if kind == "message_start":
+            message = document.get("message")
+            usage = message.get("usage") if isinstance(message, dict) else None
+            if isinstance(usage, dict):
+                record["input_tokens"] = _count(usage.get("input_tokens"))
+                record["cache_read_tokens"] = _count(usage.get("cache_read_input_tokens"))
+                record["cache_creation_tokens"] = _count(
+                    usage.get("cache_creation_input_tokens")
+                )
+        elif kind == "message_delta":
+            usage = document.get("usage")
+            if isinstance(usage, dict):
+                record["output_tokens"] = _count(usage.get("output_tokens"))
+            if record["input_tokens"] is None:
+                record["input_tokens"] = 0
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0
+
+
+def parse_json_usage(record: dict[str, Any], raw: bytes) -> None:
+    """Update ``record`` from a complete non-stream Anthropic JSON response."""
+    try:
+        document = json.loads(raw.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return
+    usage = document.get("usage") if isinstance(document, dict) else None
+    if not isinstance(usage, dict):
+        return
+    record["input_tokens"] = _count(usage.get("input_tokens"))
+    record["output_tokens"] = _count(usage.get("output_tokens"))
+    record["cache_read_tokens"] = _count(usage.get("cache_read_input_tokens"))
+    record["cache_creation_tokens"] = _count(usage.get("cache_creation_input_tokens"))
+
+
+def apply_cursor_usage(record: dict[str, Any], usage: dict[str, Any] | None) -> None:
+    """Fold a Cursor ``Get Agent Usage`` run-usage object into ``record``."""
+    if not isinstance(usage, dict):
+        return
+    record["input_tokens"] = _count(usage.get("inputTokens"))
+    record["output_tokens"] = _count(usage.get("outputTokens"))
+    record["cache_read_tokens"] = _count(usage.get("cacheReadTokens"))
+    record["cache_creation_tokens"] = _count(usage.get("cacheWriteTokens"))
+
+
+class MetricsRecorder:
+    """Collect one request's metrics and append a record on ``finish``."""
+
+    def __init__(self, route: str, model: str) -> None:
+        self.record = new_record(route, model)
+        self._started = time.monotonic()
+        self._finished = False
+
+    def mark_first_byte(self) -> None:
+        if self.record["ttft_ms"] is None:
+            self.record["ttft_ms"] = int((time.monotonic() - self._started) * 1000)
+
+    def observe_sse(self, raw_event: bytes) -> None:
+        extract_usage_event(self.record, raw_event)
+
+    def observe_json(self, raw: bytes) -> None:
+        parse_json_usage(self.record, raw[:_MAX_JSON_TEE_BYTES])
+
+    def finish(
+        self,
+        status: int,
+        *,
+        error: str | None = None,
+        usage: dict[str, Any] | None = None,
+    ) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        if usage is not None:
+            apply_cursor_usage(self.record, usage)
+        duration = time.monotonic() - self._started
+        self.record["status"] = status
+        self.record["error"] = error[:500] if error else None
+        self.record["duration_ms"] = int(duration * 1000)
+        output = self.record.get("output_tokens")
+        if isinstance(output, int) and output > 0 and duration > 0:
+            self.record["tokens_per_sec"] = round(output / duration, 2)
+        write_record(self.record)
+
+
+def write_record(record: dict[str, Any]) -> None:
+    path = metrics_path()
+    line = json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n"
+    with _WRITE_LOCK:
+        _rotate_if_needed(path, len(line.encode()))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+
+
+def _rotate_if_needed(path: Path, incoming: int) -> None:
+    try:
+        size = path.stat().st_size if path.exists() else 0
+    except OSError:
+        return
+    if size == 0 or size + incoming <= MAX_METRICS_BYTES:
+        return
+    rotated = path.with_suffix(".jsonl.1")
+    try:
+        rotated.unlink(missing_ok=True)
+        path.rename(rotated)
+    except OSError:
+        pass
+
+
+def load_records(days: int) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    records: list[dict[str, Any]] = []
+    path = metrics_path()
+    for candidate in (path.with_suffix(".jsonl.1"), path):
+        try:
+            handle = candidate.open("r", encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        with handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                at = record.get("at")
+                if isinstance(at, str):
+                    try:
+                        if datetime.fromisoformat(at) < cutoff:
+                            continue
+                    except ValueError:
+                        pass
+                records.append(record)
+    return records
+
+
+def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
+    groups: dict[tuple[str, str], dict[str, Any]] = defaultdict(
+        lambda: {
+            "requests": 0,
+            "errors": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "output_tokens_streamed": 0,
+            "stream_seconds": 0.0,
+            "ttft_total_ms": 0,
+            "ttft_samples": 0,
+        }
+    )
+    for record in records:
+        key = (str(record.get("route")), str(record.get("model")))
+        bucket = groups[key]
+        bucket["requests"] += 1
+        if record.get("error"):
+            bucket["errors"] += 1
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+        ):
+            value = record.get(field)
+            if isinstance(value, int):
+                bucket[field] += value
+        output = record.get("output_tokens")
+        duration = record.get("duration_ms")
+        if (
+            record.get("stream")
+            and isinstance(output, int)
+            and output > 0
+            and isinstance(duration, int)
+            and duration > 0
+        ):
+            bucket["output_tokens_streamed"] += output
+            bucket["stream_seconds"] += duration / 1000
+        ttft = record.get("ttft_ms")
+        if isinstance(ttft, int) and ttft >= 0:
+            bucket["ttft_total_ms"] += ttft
+            bucket["ttft_samples"] += 1
+
+    models = []
+    totals = {
+        "requests": 0,
+        "errors": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+    }
+    for (route, model), bucket in sorted(groups.items()):
+        tps = (
+            bucket["output_tokens_streamed"] / bucket["stream_seconds"]
+            if bucket["stream_seconds"] > 0
+            else None
+        )
+        avg_ttft = (
+            bucket["ttft_total_ms"] / bucket["ttft_samples"]
+            if bucket["ttft_samples"]
+            else None
+        )
+        models.append(
+            {
+                "route": route,
+                "model": model,
+                "requests": bucket["requests"],
+                "errors": bucket["errors"],
+                "input_tokens": bucket["input_tokens"],
+                "output_tokens": bucket["output_tokens"],
+                "cache_read_tokens": bucket["cache_read_tokens"],
+                "cache_creation_tokens": bucket["cache_creation_tokens"],
+                "tokens_per_sec": round(tps, 2) if tps else None,
+                "avg_ttft_ms": round(avg_ttft) if avg_ttft is not None else None,
+            }
+        )
+        for field in totals:
+            totals[field] += bucket[field]
+    return {"models": models, "totals": totals}
+
+
+def format_summary(days: int) -> str:
+    records = load_records(days)
+    if not records:
+        return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
+    summary = summarize(records)
+    lines = [
+        f"Router metrics — last {days} day(s) — {summary['totals']['requests']} request(s)",
+        "",
+        f"{'route':<11} {'model':<22} {'req':>5} {'err':>4} {'in tok':>10} "
+        f"{'out tok':>9} {'cache rd':>10} {'cache wr':>10} {'tok/s':>7} {'ttft ms':>8}",
+    ]
+    for row in summary["models"]:
+        lines.append(
+            f"{row['route']:<11.11} {row['model']:<22.22} {row['requests']:>5} "
+            f"{row['errors']:>4} {row['input_tokens']:>10} {row['output_tokens']:>9} "
+            f"{row['cache_read_tokens']:>10} {row['cache_creation_tokens']:>10} "
+            f"{_fmt(row['tokens_per_sec']):>7} {_fmt(row['avg_ttft_ms']):>8}"
+        )
+    totals = summary["totals"]
+    lines.append(
+        f"{'TOTAL':<11} {'':<22} {totals['requests']:>5} {totals['errors']:>4} "
+        f"{totals['input_tokens']:>10} {totals['output_tokens']:>9} "
+        f"{totals['cache_read_tokens']:>10} {totals['cache_creation_tokens']:>10}"
+    )
+    return "\n".join(lines)
+
+
+def _fmt(value: Any) -> str:
+    if value is None:
+        return "-"
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)

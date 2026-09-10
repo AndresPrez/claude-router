@@ -92,6 +92,10 @@ def router_status_path() -> Path:
     return state_dir() / "router-status.json"
 
 
+def metrics_path() -> Path:
+    return state_dir() / "metrics.jsonl"
+
+
 def systemd_unit_path() -> Path:
     root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     return root / "systemd" / "user" / "claude-router.service"

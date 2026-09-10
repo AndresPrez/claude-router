@@ -585,5 +585,25 @@ def cancel_run(agent_id: str, run_id: str, credential: str) -> None:
         )
     except CursorBridgeError:
         return
-    except KeyError:
-        return
+
+
+def fetch_run_usage(agent_id: str, run_id: str, credential: str) -> dict[str, Any] | None:
+    """Best-effort fetch of one run's token usage; ``None`` when unavailable."""
+    if not agent_id or not run_id:
+        return None
+    try:
+        document = _request_json(
+            "GET",
+            f"/v1/agents/{agent_id}/usage?runId={run_id}",
+            credential,
+        )
+    except CursorBridgeError:
+        return None
+    runs = document.get("runs")
+    if not isinstance(runs, list):
+        return None
+    for run in runs:
+        if isinstance(run, dict) and run.get("id") == run_id:
+            usage = run.get("usage")
+            return usage if isinstance(usage, dict) else None
+    return None

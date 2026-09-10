@@ -20,9 +20,11 @@ from .cursor import (
     bridge_frames,
     cancel_run,
     error_frame,
+    fetch_run_usage,
     read_cursor_credential,
     run_messages,
 )
+from .metrics import MetricsRecorder
 from .models import (
     CONTEXT_BUDGET_SUFFIX,
     OPENROUTER_MODEL_PREFIX,
@@ -424,6 +426,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 self._serve_cursor(model, body)
                 self._record_status("cursor", model, None)
                 return
+            recorder = MetricsRecorder(route, model)
             if route == "openrouter":
                 upstream = self.router.openrouter_upstream
             elif route == "zai":
@@ -436,6 +439,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 self.path,
                 headers,
                 body,
+                recorder=recorder,
                 normalize_gemini=(
                     route == "openrouter" and model.casefold().startswith(GEMINI_MODEL_PREFIX)
                 ),
@@ -494,6 +498,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         headers: dict[str, str],
         body: bytes,
         *,
+        recorder: MetricsRecorder | None = None,
         normalize_gemini: bool = False,
     ) -> None:
         connection_type, hostname, port, base_path = _target(upstream)
@@ -502,10 +507,16 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             kwargs["context"] = ssl.create_default_context()
         connection = connection_type(hostname, port, **kwargs)
         path = f"{base_path}{request_path}"
+        tee: bytearray | None = None
+        sse_buffer = b""
+        upstream_status = 0
         try:
             connection.request("POST", path, body=body, headers=headers)
             response = connection.getresponse()
             content_type = response.getheader("Content-Type", "")
+            upstream_status = response.status
+            if recorder is not None:
+                recorder.record["stream"] = "text/event-stream" in content_type.casefold()
             self.send_response(response.status, response.reason)
             for key, value in response.getheaders():
                 if key.casefold() not in HOP_BY_HOP | {"content-length", "server", "date"}:
@@ -516,16 +527,42 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 self._forward_gemini_sse(response)
             elif normalize_gemini:
                 self._write_chunk(_remove_gemini_thinking_content(response.read()))
+            elif "text/event-stream" in content_type.casefold():
+                # Stream events through untouched while tapping usage counters.
+                while chunk := response.read1(64 * 1024):
+                    if recorder is not None:
+                        recorder.mark_first_byte()
+                    sse_buffer += chunk
+                    while (split := _next_sse_event(sse_buffer)) is not None:
+                        event, sse_buffer = split
+                        if recorder is not None:
+                            recorder.observe_sse(event)
+                    self._write_chunk(chunk)
             else:
                 # ``read`` may wait for the full requested size or EOF, which turns
                 # SSE token streams into one buffered completion. ``read1`` makes
                 # at most one underlying read and returns available bytes promptly.
                 while chunk := response.read1(64 * 1024):
+                    if recorder is not None:
+                        recorder.mark_first_byte()
+                        if len(tee or b"") < 4_000_000:
+                            tee = bytearray() if tee is None else tee
+                            tee.extend(chunk)
                     self._write_chunk(chunk)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
+            if recorder is not None:
+                if tee is not None:
+                    recorder.observe_json(bytes(tee))
+                recorder.finish(upstream_status)
         except (BrokenPipeError, ConnectionResetError):
+            if recorder is not None:
+                recorder.finish(upstream_status, error="client disconnected")
             return
+        except (OSError, http.client.HTTPException, RuntimeError) as exc:
+            if recorder is not None:
+                recorder.finish(upstream_status or 502, error=str(exc))
+            raise
         finally:
             connection.close()
 
@@ -557,6 +594,8 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
         credential = read_cursor_credential()
+        recorder = MetricsRecorder("cursor", model)
+        recorder.record["stream"] = bool(payload.get("stream"))
         active: dict[str, str] = {}
         frames = bridge_frames(
             payload,
@@ -575,29 +614,56 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             self.end_headers()
             try:
                 for frame in frames:
+                    recorder.mark_first_byte()
                     self._write_chunk(frame)
             except (BrokenPipeError, ConnectionResetError):
                 if "agent_id" in active:
                     cancel_run(
                         active["agent_id"], active["run_id"], active["credential"]
                     )
+                self._finish_cursor_usage(
+                    recorder, active, credential, "client disconnected"
+                )
                 return
             except CursorBridgeError as exc:
                 # Headers are already sent; report as an Anthropic SSE error.
+                recorder.finish(502, error=str(exc))
                 self._write_chunk(error_frame(str(exc)))
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
+            self._finish_cursor_usage(recorder, active, credential, None)
             return
-        response = run_messages(
-            payload,
-            model,
-            self.router.cursor_registry,
-            credential,
-            repos=self.router.cursor_repos,
-            mode=self.router.cursor_mode,
-            active=active,
-        )
+        try:
+            response = run_messages(
+                payload,
+                model,
+                self.router.cursor_registry,
+                credential,
+                repos=self.router.cursor_repos,
+                mode=self.router.cursor_mode,
+                active=active,
+            )
+        except CursorBridgeError as exc:
+            recorder.finish(502, error=str(exc))
+            raise
+        recorder.finish(200)
         self._json_response(200, response)
+        self._finish_cursor_usage(recorder, active, credential, None)
+
+    def _finish_cursor_usage(
+        self,
+        recorder: MetricsRecorder,
+        active: dict[str, str],
+        credential: str,
+        error: str | None,
+    ) -> None:
+        """Fold real token usage into the record via the usage endpoint."""
+        usage = None
+        if "agent_id" in active:
+            usage = fetch_run_usage(
+                active["agent_id"], active.get("run_id", ""), credential
+            )
+        recorder.finish(200 if error is None else 499, error=error, usage=usage)
 
     def _record_status(self, route: str, model: str, error: str | None) -> None:
         if not self.router.record_status:

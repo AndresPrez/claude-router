@@ -36,6 +36,8 @@ from .cursor import (
     validate_cursor_key_shape as _validate_cursor_key_shape,
 )
 from .launcher import has_native_login, launch_claude
+from .metrics import format_summary, load_records
+from .metrics import summarize as summarize_metrics
 from .models import (
     exact_models,
     hybrid_openrouter_allowed,
@@ -176,6 +178,12 @@ def parser() -> argparse.ArgumentParser:
     choice = select.add_mutually_exclusive_group()
     choice.add_argument("--model", dest="model_option", help="select one exact model ID")
     choice.add_argument("--models", nargs="+", metavar="MODEL", help="select exact model IDs")
+
+    metrics = commands.add_parser(
+        "metrics", help="show token usage, cache, and speed metrics"
+    )
+    metrics.add_argument("--days", type=int, default=7, help="look back N days (default 7)")
+    metrics.add_argument("--json", action="store_true", help="print the summary as JSON")
 
     config = commands.add_parser("config", help="change credentials and CLI preferences")
     config.add_argument("--key-stdin", action="store_true", help="read the key from stdin")
@@ -955,6 +963,14 @@ def main(argv: list[str] | None = None) -> int:
                 cursor_key_stdin=args.cursor_key_stdin,
                 check_confirmation=args.check_confirmation,
             )
+        if args.command == "metrics":
+            if args.json:
+                import json as _json
+
+                print(_json.dumps(summarize_metrics(load_records(args.days)), indent=2))
+            else:
+                print(format_summary(args.days))
+            return 0
         if args.command == "doctor":
             return command_doctor(as_json=args.json)
         if args.command == "serve":
