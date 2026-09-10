@@ -194,3 +194,36 @@ def test_extract_usage_reads_cumulative_message_delta() -> None:
     assert record["input_tokens"] == 15
     assert record["output_tokens"] == 8
     assert record["cache_read_tokens"] == 2240
+
+
+def test_format_histogram_renders_scaled_bars(tmp_path, monkeypatch) -> None:
+    from claude_router.metrics import format_histogram
+
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+    for i in range(4):
+        write_record(
+            {
+                "at": f"2026-09-10T1{i}:15:00+00:00",
+                "route": "zai",
+                "model": "glm-5.3",
+                "stream": True,
+                "status": 200,
+                "error": None,
+                "duration_ms": 2000,
+                "ttft_ms": 1000,
+                "input_tokens": 10,
+                "output_tokens": 100,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+                "tokens_per_sec": 50.0,
+            }
+        )
+
+    out = format_histogram(days=7)
+
+    assert "Requests per hour" in out
+    assert "legend" in out
+    assert "09-10 1" in out
+    assert "▓" in out
+    assert "50.0" in out

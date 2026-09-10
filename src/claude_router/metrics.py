@@ -15,6 +15,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 from .paths import metrics_path
@@ -313,6 +314,62 @@ def format_summary(days: int) -> str:
         f"{'TOTAL':<11} {'':<22} {totals['requests']:>5} {totals['errors']:>4} "
         f"{totals['input_tokens']:>10} {totals['output_tokens']:>9} "
         f"{totals['cache_read_tokens']:>10} {totals['cache_creation_tokens']:>10}"
+    )
+    return "\n".join(lines)
+
+
+def format_histogram(days: int) -> str:
+    """Render requests per hour as an ASCII histogram segmented by route."""
+    records = load_records(days)
+    if not records:
+        return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
+
+    hours: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"routes": defaultdict(int), "tps": [], "ttft": [], "errors": 0}
+    )
+    for record in records:
+        at = record.get("at")
+        try:
+            hour = datetime.fromisoformat(str(at)).strftime("%m-%d %H:00")
+        except ValueError:
+            continue
+        bucket = hours[hour]
+        bucket["routes"][str(record.get("route"))] += 1
+        if record.get("error"):
+            bucket["errors"] += 1
+        if isinstance(record.get("tokens_per_sec"), (int, float)):
+            bucket["tps"].append(record["tokens_per_sec"])
+        if isinstance(record.get("ttft_ms"), int):
+            bucket["ttft"].append(record["ttft_ms"])
+
+    characters = {"anthropic": "█", "zai": "▓", "cursor": "░"}
+    width = 48
+    busiest = max(
+        (sum(bucket["routes"].values()) for bucket in hours.values()), default=0
+    )
+    scale = max(busiest, 1) / width
+
+    lines = [
+        f"Requests per hour — last {days} day(s) — {len(records)} total",
+        "",
+        f"{'hour':<12} {'req':>4} {'err':>4}  {'distribution':<50} "
+        f"{'med tok/s':>9} {'med ttft':>9}",
+    ]
+    for hour in sorted(hours):
+        bucket = hours[hour]
+        total = sum(bucket["routes"].values())
+        bar = "".join(
+            characters.get(route, "?") * max(int(round(count / scale)), 1 if count else 0)
+            for route, count in sorted(bucket["routes"].items())
+        )[:width]
+        tps = f"{median(bucket['tps']):.1f}" if bucket["tps"] else "-"
+        ttft = f"{median(bucket['ttft']) / 1000:.1f}s" if bucket["ttft"] else "-"
+        lines.append(
+            f"{hour:<12} {total:>4} {bucket['errors']:>4}  {bar:<50} {tps:>9} {ttft:>9}"
+        )
+    lines.append("")
+    lines.append(
+        "legend: " + ", ".join(f"{char} {name}" for name, char in characters.items())
     )
     return "\n".join(lines)
 

@@ -36,7 +36,7 @@ from .cursor import (
     validate_cursor_key_shape as _validate_cursor_key_shape,
 )
 from .launcher import has_native_login, launch_claude
-from .metrics import format_summary, load_records
+from .metrics import format_histogram, format_summary, load_records
 from .metrics import summarize as summarize_metrics
 from .models import (
     exact_models,
@@ -184,6 +184,9 @@ def parser() -> argparse.ArgumentParser:
     )
     metrics.add_argument("--days", type=int, default=7, help="look back N days (default 7)")
     metrics.add_argument("--json", action="store_true", help="print the summary as JSON")
+    metrics.add_argument(
+        "--histogram", action="store_true", help="requests per hour, segmented by route"
+    )
 
     config = commands.add_parser("config", help="change credentials and CLI preferences")
     config.add_argument("--key-stdin", action="store_true", help="read the key from stdin")
@@ -964,6 +967,9 @@ def main(argv: list[str] | None = None) -> int:
                 check_confirmation=args.check_confirmation,
             )
         if args.command == "metrics":
+            if args.histogram:
+                print(format_histogram(args.days))
+                return 0
             if args.json:
                 import json as _json
 
