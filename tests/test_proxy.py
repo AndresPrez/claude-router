@@ -669,3 +669,32 @@ def test_openrouter_route_strips_context_budget_suffix() -> None:
     routed = json.loads(body)
 
     assert (route, model, routed["model"]) == ("openrouter", GLM, GLM)
+
+
+def test_wafer_classification_and_route() -> None:
+    assert classify_model("clr/wafer/GLM-5.3", {"GLM-5.3"}) == ("wafer", "GLM-5.3")
+    with pytest.raises(ValueError, match="Wafer model is not in the clr favorites allowlist"):
+        classify_model("clr/wafer/GLM-5.3", set())
+
+
+def test_wafer_route_payload_rewrites_model_and_strips_patterns() -> None:
+    payload = {
+        "model": "clr/wafer/GLM-5.3[1m]",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [
+            {
+                "name": "artifact",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"field": {"type": "string", "pattern": "^[^\\p{Cc}]+$"}},
+                },
+            }
+        ],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {"GLM-5.3"})
+    routed = json.loads(body)
+    props = routed["tools"][0]["input_schema"]["properties"]
+
+    assert (route, model, routed["model"]) == ("wafer", "GLM-5.3", "GLM-5.3")
+    assert "pattern" not in props["field"]

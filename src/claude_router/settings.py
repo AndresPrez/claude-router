@@ -31,6 +31,7 @@ from .paths import (
     preferences_path,
     router_token_path,
     state_dir,
+    wafer_credential_path,
     zai_credential_path,
 )
 from .storage import atomic_write_json, atomic_write_text, read_json_object
@@ -542,6 +543,7 @@ def assert_private_files() -> None:
         credential_path(),
         anthropic_credential_path(),
         zai_credential_path(),
+        wafer_credential_path(),
         router_token_path(),
         preferences_path(),
         helper_path(),

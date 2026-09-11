@@ -11,6 +11,7 @@ from typing import Any
 OPENROUTER_MODEL_PREFIX = "clr/openrouter/"
 ZAI_MODEL_PREFIX = "clr/zai/"
 CURSOR_MODEL_PREFIX = "clr/cursor/"
+WAFER_MODEL_PREFIX = "clr/wafer/"
 # Claude Code's client-side context-budget marker. Upstreams receive the bare
 # id: Z.ai rejects the suffix with error 1211 (unknown model).
 CONTEXT_BUDGET_SUFFIX = "[1m]"
@@ -75,6 +76,48 @@ ZAI_MODELS: list[dict[str, Any]] = [
 ]
 ZAI_MODEL_IDS = frozenset(m["id"] for m in ZAI_MODELS)
 
+# Static Wafer Serverless catalog. Ids (case-sensitive) must match
+# GET https://pass.wafer.ai/v1/models.
+WAFER_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "GLM-5.3",
+        "name": "GLM-5.3 on Wafer",
+        "description": "Z.ai flagship GLM-5.3 MoE self-hosted on the Wafer fleet",
+        "provider": "wafer",
+        "context_length": 1_048_576,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "GLM-5.3-Flash",
+        "name": "GLM-5.3 Flash on Wafer",
+        "description": "Fast GLM-5.3 variant self-hosted on the Wafer fleet",
+        "provider": "wafer",
+        "context_length": 1_048_576,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text", "image"]},
+    },
+    {
+        "id": "Kimi-K3",
+        "name": "Kimi K3 on Wafer",
+        "description": "Kimi K3 sparse MoE self-hosted on the Wafer fleet",
+        "provider": "wafer",
+        "context_length": 1_048_576,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text", "image"]},
+    },
+    {
+        "id": "DeepSeek-V4.1-Flash",
+        "name": "DeepSeek V4.1 Flash on Wafer",
+        "description": "DeepSeek V4.1 Flash MoE served at high TPS by Wafer",
+        "provider": "wafer",
+        "context_length": 1_048_576,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text", "image"]},
+    },
+]
+WAFER_MODEL_IDS = frozenset(m["id"] for m in WAFER_MODELS)
+
 # Static Cursor Cloud Agents catalog. Model ids must match GET /v1/models on
 # api.cursor.com. Runs are agent tasks, so these entries honestly advertise
 # no Messages-API tool support.
@@ -125,6 +168,8 @@ def provider_of(model_id: str) -> str:
         return "zai"
     if model_id in CURSOR_MODEL_IDS:
         return "cursor"
+    if model_id in WAFER_MODEL_IDS:
+        return "wafer"
     return "openrouter"
 
 
@@ -190,12 +235,18 @@ def namespaced_model(model_id: str) -> str:
     prefix = {
         "zai": ZAI_MODEL_PREFIX,
         "cursor": CURSOR_MODEL_PREFIX,
+        "wafer": WAFER_MODEL_PREFIX,
     }.get(provider, OPENROUTER_MODEL_PREFIX)
     return f"{prefix}{model_id}"
 
 
 def original_model(model_id: str) -> str | None:
-    for prefix in (ZAI_MODEL_PREFIX, OPENROUTER_MODEL_PREFIX, CURSOR_MODEL_PREFIX):
+    for prefix in (
+        ZAI_MODEL_PREFIX,
+        OPENROUTER_MODEL_PREFIX,
+        CURSOR_MODEL_PREFIX,
+        WAFER_MODEL_PREFIX,
+    ):
         if model_id.startswith(prefix):
             original = model_id[len(prefix) :]
             return original or None
@@ -210,6 +261,8 @@ def route_of_namespaced(model_id: str) -> str | None:
         return "openrouter"
     if model_id.startswith(CURSOR_MODEL_PREFIX):
         return "cursor"
+    if model_id.startswith(WAFER_MODEL_PREFIX):
+        return "wafer"
     return None
 
 
@@ -328,6 +381,7 @@ def picker_description(model: dict[str, Any]) -> str:
     via = {
         "zai": "Z.ai Coding Plan via claude-router",
         "cursor": "Cursor Cloud Agents via claude-router",
+        "wafer": "Wafer Serverless via claude-router",
     }.get(provider, "OpenRouter via claude-router")
     parts = [
         str(model.get("id", "")),
@@ -367,6 +421,7 @@ def picker_row(model: dict[str, Any], *, hybrid: bool = False) -> dict[str, str]
     suffix = {
         "zai": " · Z.ai",
         "cursor": " · Cursor",
+        "wafer": " · Wafer",
     }.get(provider_of(model_id), " · OpenRouter")
     return {
         "model": (

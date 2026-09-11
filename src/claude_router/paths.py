@@ -52,6 +52,10 @@ def cursor_credential_path() -> Path:
     return config_dir() / "cursor-credential"
 
 
+def wafer_credential_path() -> Path:
+    return config_dir() / "wafer-credential"
+
+
 def router_token_path() -> Path:
     return config_dir() / "router-token"
 

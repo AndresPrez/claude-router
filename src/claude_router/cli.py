@@ -63,6 +63,7 @@ from .paths import (
     claude_settings_path,
     credential_path,
     cursor_credential_path,
+    wafer_credential_path,
     zai_credential_path,
 )
 from .picker import choose_models
@@ -80,6 +81,11 @@ from .settings import (
 from .storage import read_json_object
 from .uninstall import remove_installed_package
 from .update import update_installed_package
+from .wafer import (
+    read_wafer_credential,
+    validate_wafer_key_shape,
+    write_wafer_credential,
+)
 from .zai import read_zai_credential, validate_zai_key_shape, write_zai_credential
 
 MINIMUM_CLAUDE_VERSION = (2, 1, 242)
@@ -223,6 +229,16 @@ def parser() -> argparse.ArgumentParser:
         "--cursor-key-stdin",
         action="store_true",
         help="read and store a Cursor API key from stdin",
+    )
+    config.add_argument(
+        "--wafer-key",
+        action="store_true",
+        help="prompt to store a Wafer Serverless API key",
+    )
+    config.add_argument(
+        "--wafer-key-stdin",
+        action="store_true",
+        help="read and store a Wafer Serverless API key from stdin",
     )
     config.add_argument(
         "--check-confirmation",
@@ -377,6 +393,21 @@ def _read_cursor_key(*, from_stdin: bool) -> str:
             return existing
         key = _masked_input("Cursor API key: ").strip()
     _validate_cursor_key_shape(key)
+    return key
+
+
+def _read_wafer_key(*, from_stdin: bool) -> str:
+    if from_stdin:
+        key = sys.stdin.readline().strip()
+    else:
+        try:
+            existing = read_wafer_credential()
+        except RuntimeError:
+            existing = None
+        if existing and _confirm_key_reuse(wafer_credential_path(), "Wafer API key"):
+            return existing
+        key = _masked_input("Wafer API key: ").strip()
+    validate_wafer_key_shape(key)
     return key
 
 
@@ -712,6 +743,8 @@ def command_config(
     zai_key_stdin: bool,
     cursor_key: bool,
     cursor_key_stdin: bool,
+    wafer_key: bool,
+    wafer_key_stdin: bool,
     check_confirmation: str | None,
 ) -> int:
     if check_confirmation is not None:
@@ -757,6 +790,26 @@ def command_config(
         write_cursor_credential(_read_cursor_key(from_stdin=cursor_key_stdin))
         assert_private_files()
         print(f"Cursor credential updated: {cursor_credential_path()} (mode 0600)")
+        return 0
+    if wafer_key or wafer_key_stdin:
+        if (
+            key_stdin
+            or no_validate
+            or anthropic_auth is not None
+            or anthropic_key_stdin
+            or zai_key
+            or zai_key_stdin
+            or cursor_key
+            or cursor_key_stdin
+        ):
+            raise ValueError(
+                "configure Wafer separately from other credentials"
+            )
+        if wafer_key and wafer_key_stdin:
+            raise ValueError("use --wafer-key or --wafer-key-stdin, not both")
+        write_wafer_credential(_read_wafer_key(from_stdin=wafer_key_stdin))
+        assert_private_files()
+        print(f"Wafer credential updated: {wafer_credential_path()} (mode 0600)")
         return 0
     if key_stdin and (anthropic_auth is not None or anthropic_key_stdin):
         raise ValueError("configure OpenRouter and Anthropic credentials in separate commands")
@@ -967,6 +1020,8 @@ def main(argv: list[str] | None = None) -> int:
                 zai_key_stdin=args.zai_key_stdin,
                 cursor_key=args.cursor_key,
                 cursor_key_stdin=args.cursor_key_stdin,
+                wafer_key=args.wafer_key,
+                wafer_key_stdin=args.wafer_key_stdin,
                 check_confirmation=args.check_confirmation,
             )
         if args.command == "metrics":
