@@ -44,8 +44,12 @@ def test_recorder_computes_speed_and_writes(tmp_path, monkeypatch) -> None:
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
 
+    clock = {"now": 0.0}
+    monkeypatch.setattr(metrics_module.time, "monotonic", lambda: clock["now"])
     recorder = MetricsRecorder("zai", "glm-5.3-flash")
+    clock["now"] = 0.5
     recorder.mark_first_byte()
+    clock["now"] = 0.6
     recorder.observe_sse(
         b'event: message_start\ndata: {"type":"message_start","message":{"usage":'
         b'{"input_tokens":100}}}\n\n'
@@ -233,9 +237,13 @@ def test_format_histogram_renders_scaled_bars(tmp_path, monkeypatch) -> None:
 def test_recorder_computes_decode_rate(tmp_path, monkeypatch) -> None:
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(metrics_module.time, "monotonic", lambda: clock["now"])
 
     recorder = MetricsRecorder("inco", "glm-5.3-flash:fast")
+    clock["now"] = 0.5
     recorder.mark_first_byte()
+    clock["now"] = 3.0
     recorder.observe_sse(
         b'event: message_delta\ndata: {"type":"message_delta","usage":'
         b'{"output_tokens":100}}\n\n'
@@ -252,8 +260,12 @@ def test_decode_rate_skips_tiny_responses(tmp_path, monkeypatch) -> None:
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
 
+    clock = {"now": 0.0}
+    monkeypatch.setattr(metrics_module.time, "monotonic", lambda: clock["now"])
     recorder = MetricsRecorder("zai", "glm-5.3-flash")
+    clock["now"] = 0.5
     recorder.mark_first_byte()
+    clock["now"] = 0.6
     recorder.observe_sse(
         b'event: message_delta\ndata: {"type":"message_delta","usage":'
         b'{"output_tokens":8}}\n\n'
