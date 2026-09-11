@@ -356,6 +356,7 @@ def route_payload(
     body: bytes,
     favorites: set[str],
     model_modalities: dict[str, frozenset[str]] | None = None,
+    fireworks_service_tier: str | None = None,
 ) -> tuple[str, str, bytes]:
     try:
         payload = json.loads(body)
@@ -371,6 +372,8 @@ def route_payload(
             _remove_gemini_adaptive_thinking(payload)
         if route in {"zai", "wafer", "fireworks"}:
             _repair_zai_tool_schemas(payload)
+        if route == "fireworks" and fireworks_service_tier:
+            payload["service_tier"] = fireworks_service_tier
         modalities = (model_modalities or {}).get(upstream_model)
         if modalities is not None and "image" not in modalities:
             vision_hint = _vision_hint(favorites, model_modalities or {})
@@ -430,7 +433,10 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         try:
             route, model, body = route_payload(
-                body, self.router.favorites, self.router.model_modalities
+                body,
+                self.router.favorites,
+                self.router.model_modalities,
+                fireworks_service_tier=self.router.fireworks_service_tier,
             )
             if route == "cursor":
                 self._serve_cursor(model, body)
@@ -487,7 +493,11 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         }
         headers["Content-Length"] = str(content_length)
         headers["Accept-Encoding"] = "identity"
-        headers.setdefault("Content-Type", "application/json")
+        # Case-insensitive: a client that sent a lowercase content-type must
+        # not end up forwarded alongside a capitalized duplicate (Fireworks
+        # rejects requests carrying two Content-Type headers).
+        if not any(key.casefold() == "content-type" for key in headers):
+            headers["Content-Type"] = "application/json"
         if route == "openrouter":
             headers["Authorization"] = f"Bearer {read_credential()}"
             headers["HTTP-Referer"] = "https://github.com/AndresPrez/claude-router"
@@ -747,6 +757,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         cursor_registry: AgentRegistry | None = None,
         cursor_repos: list[str] | None = None,
         cursor_mode: str = "plan",
+        fireworks_service_tier: str | None = None,
     ) -> None:
         if anthropic_auth not in {"max", "api"}:
             raise ValueError("Anthropic authentication must be max or api")
@@ -763,6 +774,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         self.cursor_registry = cursor_registry or AgentRegistry()
         self.cursor_repos = cursor_repos
         self.cursor_mode = cursor_mode if cursor_mode in {"plan", "agent"} else "plan"
+        self.fireworks_service_tier = fireworks_service_tier
         super().__init__(address, HybridRouterHandler)
 
 
@@ -786,6 +798,9 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     cursor_mode = preferences.get("cursor_mode", "plan")
     if cursor_mode not in {"plan", "agent"}:
         raise RuntimeError("invalid cursor_mode preference")
+    fireworks_tier = preferences.get("fireworks_service_tier")
+    if fireworks_tier is not None and fireworks_tier not in {"standard", "priority"}:
+        raise RuntimeError("invalid fireworks_service_tier preference")
     # The newly installed router is the first new-version process started by
     # ``clr update``. Refreshing here upgrades installations from older
     # releases without requiring users to rerun setup or select.
@@ -798,6 +813,7 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         model_modalities=catalog_input_modalities(catalog),
         cursor_repos=cursor_repos,
         cursor_mode=cursor_mode,
+        fireworks_service_tier=fireworks_tier,
     )
     try:
         server.serve_forever()

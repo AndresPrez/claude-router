@@ -717,3 +717,32 @@ def test_fireworks_route_payload_rewrites_model() -> None:
 
     expected = "deepseek-v4-pro-0813"
     assert (route, model, routed["model"]) == ("fireworks", expected, expected)
+
+
+def test_fireworks_service_tier_injected_when_configured() -> None:
+    payload = {
+        "model": "clr/fireworks/glm-5p3-flash",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(
+        json.dumps(payload).encode(),
+        {"glm-5p3-flash"},
+        fireworks_service_tier="priority",
+    )
+    routed = json.loads(body)
+
+    assert route == "fireworks"
+    assert routed["service_tier"] == "priority"
+
+
+def test_fireworks_service_tier_omitted_by_default() -> None:
+    payload = {
+        "model": "clr/fireworks/glm-5p3-flash",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    _, _, body = route_payload(json.dumps(payload).encode(), {"glm-5p3-flash"})
+    routed = json.loads(body)
+
+    assert "service_tier" not in routed
