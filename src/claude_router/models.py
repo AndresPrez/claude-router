@@ -13,6 +13,7 @@ ZAI_MODEL_PREFIX = "clr/zai/"
 CURSOR_MODEL_PREFIX = "clr/cursor/"
 WAFER_MODEL_PREFIX = "clr/wafer/"
 FIREWORKS_MODEL_PREFIX = "clr/fireworks/"
+INCO_MODEL_PREFIX = "clr/inco/"
 # Claude Code's client-side context-budget marker. Upstreams receive the bare
 # id: Z.ai rejects the suffix with error 1211 (unknown model).
 CONTEXT_BUDGET_SUFFIX = "[1m]"
@@ -207,6 +208,31 @@ FIREWORKS_MODELS: list[dict[str, Any]] = [
 ]
 FIREWORKS_MODEL_IDS = frozenset(m["id"] for m in FIREWORKS_MODELS)
 
+# Static Inco AI catalog (public beta, api.inco.ai). Ids verified against
+# GET /v1/models once a credential is configured; DFlash speculative serving
+# leads Artificial Analysis throughput for GLM-5.3 and GLM-5.3-Flash.
+INCO_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "GLM-5.3",
+        "name": "GLM 5.3 on Inco",
+        "description": "GLM-5.3 served by Inco with DFlash speculative decoding",
+        "provider": "inco",
+        "context_length": 1_048_576,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "GLM-5.3-Flash",
+        "name": "GLM 5.3 Flash on Inco",
+        "description": "GLM-5.3-Flash served by Inco with DFlash speculative decoding",
+        "provider": "inco",
+        "context_length": 1_048_576,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+]
+INCO_MODEL_IDS = frozenset(m["id"] for m in INCO_MODELS)
+
 # Static Cursor Cloud Agents catalog. Model ids must match GET /v1/models on
 # api.cursor.com. Runs are agent tasks, so these entries honestly advertise
 # no Messages-API tool support.
@@ -261,6 +287,8 @@ def provider_of(model_id: str) -> str:
         return "wafer"
     if model_id in FIREWORKS_MODEL_IDS:
         return "fireworks"
+    if model_id in INCO_MODEL_IDS:
+        return "inco"
     return "openrouter"
 
 
@@ -328,6 +356,7 @@ def namespaced_model(model_id: str) -> str:
         "cursor": CURSOR_MODEL_PREFIX,
         "wafer": WAFER_MODEL_PREFIX,
         "fireworks": FIREWORKS_MODEL_PREFIX,
+        "inco": INCO_MODEL_PREFIX,
     }.get(provider, OPENROUTER_MODEL_PREFIX)
     return f"{prefix}{model_id}"
 
@@ -339,6 +368,7 @@ def original_model(model_id: str) -> str | None:
         CURSOR_MODEL_PREFIX,
         WAFER_MODEL_PREFIX,
         FIREWORKS_MODEL_PREFIX,
+        INCO_MODEL_PREFIX,
     ):
         if model_id.startswith(prefix):
             original = model_id[len(prefix) :]
@@ -358,6 +388,8 @@ def route_of_namespaced(model_id: str) -> str | None:
         return "wafer"
     if model_id.startswith(FIREWORKS_MODEL_PREFIX):
         return "fireworks"
+    if model_id.startswith(INCO_MODEL_PREFIX):
+        return "inco"
     return None
 
 
@@ -478,6 +510,7 @@ def picker_description(model: dict[str, Any]) -> str:
         "cursor": "Cursor Cloud Agents via claude-router",
         "wafer": "Wafer Serverless via claude-router",
         "fireworks": "Fireworks Serverless via claude-router",
+        "inco": "Inco AI (DFlash) via claude-router",
     }.get(provider, "OpenRouter via claude-router")
     parts = [
         str(model.get("id", "")),
@@ -519,6 +552,7 @@ def picker_row(model: dict[str, Any], *, hybrid: bool = False) -> dict[str, str]
         "cursor": " · Cursor",
         "wafer": " · Wafer",
         "fireworks": " · Fireworks",
+        "inco": " · Inco",
     }.get(provider_of(model_id), " · OpenRouter")
     return {
         "model": (

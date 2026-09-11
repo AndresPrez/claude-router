@@ -42,6 +42,7 @@ from .fireworks import (
 from .fireworks import (
     validate_fireworks_key_shape as _validate_fireworks_key_shape,
 )
+from .inco import read_inco_credential, validate_inco_key_shape, write_inco_credential
 from .launcher import has_native_login, launch_claude
 from .metrics import format_histogram, format_summary, load_records
 from .metrics import summarize as summarize_metrics
@@ -71,6 +72,7 @@ from .paths import (
     credential_path,
     cursor_credential_path,
     fireworks_credential_path,
+    inco_credential_path,
     wafer_credential_path,
     zai_credential_path,
 )
@@ -259,6 +261,16 @@ def parser() -> argparse.ArgumentParser:
         help="read and store a Fireworks AI API key from stdin",
     )
     config.add_argument(
+        "--inco-key",
+        action="store_true",
+        help="prompt to store an Inco AI API key",
+    )
+    config.add_argument(
+        "--inco-key-stdin",
+        action="store_true",
+        help="read and store an Inco AI API key from stdin",
+    )
+    config.add_argument(
         "--check-confirmation",
         choices=("ask", "never"),
         help="ask before billable model checks, or never ask",
@@ -441,6 +453,21 @@ def _read_fireworks_key(*, from_stdin: bool) -> str:
             return existing
         key = _masked_input("Fireworks API key: ").strip()
     _validate_fireworks_key_shape(key)
+    return key
+
+
+def _read_inco_key(*, from_stdin: bool) -> str:
+    if from_stdin:
+        key = sys.stdin.readline().strip()
+    else:
+        try:
+            existing = read_inco_credential()
+        except RuntimeError:
+            existing = None
+        if existing and _confirm_key_reuse(inco_credential_path(), "Inco AI API key"):
+            return existing
+        key = _masked_input("Inco AI API key: ").strip()
+    validate_inco_key_shape(key)
     return key
 
 
@@ -780,6 +807,8 @@ def command_config(
     wafer_key_stdin: bool,
     fireworks_key: bool,
     fireworks_key_stdin: bool,
+    inco_key: bool,
+    inco_key_stdin: bool,
     check_confirmation: str | None,
 ) -> int:
     if check_confirmation is not None:
@@ -865,6 +894,28 @@ def command_config(
         write_fireworks_credential(_read_fireworks_key(from_stdin=fireworks_key_stdin))
         assert_private_files()
         print(f"Fireworks credential updated: {fireworks_credential_path()} (mode 0600)")
+        return 0
+    if inco_key or inco_key_stdin:
+        if (
+            key_stdin
+            or no_validate
+            or anthropic_auth is not None
+            or anthropic_key_stdin
+            or zai_key
+            or zai_key_stdin
+            or cursor_key
+            or cursor_key_stdin
+            or wafer_key
+            or wafer_key_stdin
+            or fireworks_key
+            or fireworks_key_stdin
+        ):
+            raise ValueError("configure Inco separately from other credentials")
+        if inco_key and inco_key_stdin:
+            raise ValueError("use --inco-key or --inco-key-stdin, not both")
+        write_inco_credential(_read_inco_key(from_stdin=inco_key_stdin))
+        assert_private_files()
+        print(f"Inco credential updated: {inco_credential_path()} (mode 0600)")
         return 0
     if key_stdin and (anthropic_auth is not None or anthropic_key_stdin):
         raise ValueError("configure OpenRouter and Anthropic credentials in separate commands")
@@ -1079,6 +1130,8 @@ def main(argv: list[str] | None = None) -> int:
                 wafer_key_stdin=args.wafer_key_stdin,
                 fireworks_key=args.fireworks_key,
                 fireworks_key_stdin=args.fireworks_key_stdin,
+                inco_key=args.inco_key,
+                inco_key_stdin=args.inco_key_stdin,
                 check_confirmation=args.check_confirmation,
             )
         if args.command == "metrics":

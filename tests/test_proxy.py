@@ -746,3 +746,9 @@ def test_fireworks_service_tier_omitted_by_default() -> None:
     routed = json.loads(body)
 
     assert "service_tier" not in routed
+
+
+def test_inco_classification_and_route() -> None:
+    assert classify_model("clr/inco/GLM-5.3", {"GLM-5.3"}) == ("inco", "GLM-5.3")
+    with pytest.raises(ValueError, match="Inco model is not in the clr favorites allowlist"):
+        classify_model("clr/inco/GLM-5.3", set())

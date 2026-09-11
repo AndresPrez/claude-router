@@ -60,6 +60,10 @@ def fireworks_credential_path() -> Path:
     return config_dir() / "fireworks-credential"
 
 
+def inco_credential_path() -> Path:
+    return config_dir() / "inco-credential"
+
+
 def router_token_path() -> Path:
     return config_dir() / "router-token"
 

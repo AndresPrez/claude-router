@@ -6,7 +6,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
-from claude_router.models import CURSOR_MODELS, FIREWORKS_MODELS, WAFER_MODELS, ZAI_MODELS
+from claude_router.models import (
+    CURSOR_MODELS,
+    FIREWORKS_MODELS,
+    INCO_MODELS,
+    WAFER_MODELS,
+    ZAI_MODELS,
+)
 from claude_router.openrouter import (
     load_catalog,
     refresh_catalog,
@@ -57,7 +63,7 @@ def test_validate_and_refresh_use_bearer_and_persist(
     monkeypatch.setenv("CLAUDE_ROUTER_API_BASE", f"http://127.0.0.1:{server.server_port}")
     try:
         validate_key(KEY)
-        static = [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS]
+        static = [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS, *INCO_MODELS]
         assert refresh_catalog(KEY) == [*sample_models, *static]
     finally:
         server.shutdown()
@@ -67,7 +73,7 @@ def test_validate_and_refresh_use_bearer_and_persist(
         ("/key", f"Bearer {KEY}"),
         ("/models", f"Bearer {KEY}"),
     ]
-    static = [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS]
+    static = [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS, *INCO_MODELS]
     assert load_catalog() == [*sample_models, *static]
     assert catalog_path().stat().st_mode & 0o777 == 0o600
 
