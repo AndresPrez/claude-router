@@ -124,6 +124,24 @@ WAFER_MODEL_IDS = frozenset(m["id"] for m in WAFER_MODELS)
 # the full ids when the credential is configured.
 FIREWORKS_MODELS: list[dict[str, Any]] = [
     {
+        "id": "glm-5p3",
+        "name": "GLM 5.3 on Fireworks",
+        "description": "GLM-5.3 flagship served on Fireworks serverless",
+        "provider": "fireworks",
+        "context_length": 1_048_576,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text", "image"]},
+    },
+    {
+        "id": "glm-5p3-fast",
+        "name": "GLM 5.3 Fast on Fireworks",
+        "description": "GLM-5.3 through the Fireworks fast serving router",
+        "provider": "fireworks",
+        "context_length": 1_048_576,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text", "image"]},
+    },
+    {
         "id": "glm-5p3-flash",
         "name": "GLM 5.3 Flash on Fireworks",
         "description": "GLM-5.3-Flash hybrid MoE (320B/18B active) with 1M context",
