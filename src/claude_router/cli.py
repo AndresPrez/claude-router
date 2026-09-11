@@ -208,7 +208,8 @@ def parser() -> argparse.ArgumentParser:
     )
     metrics.add_argument(
         "--route",
-        help="filter to routes containing this substring (zai, wafer, fireworks, inco, cursor, anthropic)",
+        help="filter to routes containing this substring "
+        "(zai, wafer, fireworks, inco, cursor, anthropic)",
     )
 
     config = commands.add_parser("config", help="change credentials and CLI preferences")
