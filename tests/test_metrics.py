@@ -305,3 +305,18 @@ def test_decode_rate_skips_tiny_responses(tmp_path, monkeypatch) -> None:
     record = json.loads(metrics_path.read_text().strip())
 
     assert record["decode_tokens_per_sec"] is None  # too small to measure
+
+
+def test_fit_generation_curve_recovers_slope_and_floor() -> None:
+    # generation_ms = 1500ms floor + 10ms per token -> 100 tok/s, 1500ms floor
+    points = [(tokens, 1500 + 10 * tokens) for tokens in range(20, 200, 7)]
+    floor, slope, r2 = metrics_module.fit_generation_curve(points)
+    assert r2 > 0.99
+
+    assert floor == 1500
+    assert slope == 10
+
+
+def test_fit_generation_curve_needs_samples() -> None:
+    assert metrics_module.fit_generation_curve([(100, 2000)]) is None
+    assert metrics_module.fit_generation_curve([(100, 2000)] * 10) is None  # zero variance
