@@ -86,15 +86,14 @@ def test_load_catalog_appends_zai_models_without_caching_them(isolated_home, sam
     assert catalog[: len(sample_models)] == sample_models
     assert catalog[len(sample_models) : len(sample_models) + len(ZAI_MODELS)] == ZAI_MODELS
     assert catalog[len(sample_models) + len(ZAI_MODELS) :][: len(CURSOR_MODELS)] == CURSOR_MODELS
-    tail = catalog[len(sample_models) + len(ZAI_MODELS) + len(CURSOR_MODELS) :]
-    assert tail[: len(WAFER_MODELS)] == WAFER_MODELS
-    assert tail[len(WAFER_MODELS) :] == FIREWORKS_MODELS
+    static = [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS, *INCO_MODELS]
+    assert catalog == [*sample_models, *static]
     assert "glm-5.3-flash" in {str(model["id"]) for model in catalog}
 
 
 def test_load_catalog_without_an_index_returns_static_models(isolated_home) -> None:
     assert not catalog_path().exists()
-    assert load_catalog() == [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS]
+    assert load_catalog() == [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS, *INCO_MODELS]
 
 
 def test_refresh_catalog_without_a_credential_needs_no_network(isolated_home, monkeypatch) -> None:
@@ -104,7 +103,14 @@ def test_refresh_catalog_without_a_credential_needs_no_network(isolated_home, mo
     )
 
     assert not credential_path().exists()
-    assert refresh_catalog() == [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS]
+    static = [
+        *ZAI_MODELS,
+        *CURSOR_MODELS,
+        *WAFER_MODELS,
+        *FIREWORKS_MODELS,
+        *INCO_MODELS,
+    ]
+    assert refresh_catalog() == static
 
 
 def test_refresh_catalog_with_a_malformed_credential_still_raises(isolated_home) -> None:
