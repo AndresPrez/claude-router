@@ -227,6 +227,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             "cache_creation_tokens": 0,
             "output_tokens_streamed": 0,
             "stream_seconds": 0.0,
+            "decode_output_tokens": 0,
             "generation_seconds": 0.0,
             "ttft_total_ms": 0,
             "ttft_samples": 0,
@@ -262,6 +263,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             # Decode rate only counts responses with a measurable generation
             # phase; tiny responses are chunk-arrival-bound, not decode-bound.
             if output >= 100:
+                bucket["decode_output_tokens"] += output
                 bucket["generation_seconds"] += max(
                     duration - (ttft if isinstance(ttft, int) else 0), 100
                 ) / 1000
@@ -286,7 +288,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             else None
         )
         decode_tps = (
-            bucket["output_tokens_streamed"] / bucket["generation_seconds"]
+            bucket["decode_output_tokens"] / bucket["generation_seconds"]
             if bucket["generation_seconds"] > 0
             else None
         )
