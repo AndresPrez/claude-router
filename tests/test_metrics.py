@@ -246,3 +246,19 @@ def test_recorder_computes_decode_rate(tmp_path, monkeypatch) -> None:
     assert record["tokens_per_sec"] is not None
     assert record["decode_tokens_per_sec"] is not None
     assert record["decode_tokens_per_sec"] >= record["tokens_per_sec"]
+
+
+def test_decode_rate_skips_tiny_responses(tmp_path, monkeypatch) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+
+    recorder = MetricsRecorder("zai", "glm-5.3-flash")
+    recorder.mark_first_byte()
+    recorder.observe_sse(
+        b'event: message_delta\ndata: {"type":"message_delta","usage":'
+        b'{"output_tokens":8}}\n\n'
+    )
+    recorder.finish(200)
+    record = json.loads(metrics_path.read_text().strip())
+
+    assert record["decode_tokens_per_sec"] is None  # too small to measure

@@ -151,7 +151,9 @@ class MetricsRecorder:
             self.record["tokens_per_sec"] = round(output / duration, 2)
             ttft = self.record.get("ttft_ms")
             generation = duration - (ttft / 1000 if isinstance(ttft, int) else 0)
-            if generation > 0:
+            # Short responses can arrive inside the first read, leaving no
+            # measurable generation phase; a floor keeps the rate meaningful.
+            if generation >= 0.1 and output >= 100:
                 self.record["decode_tokens_per_sec"] = round(output / generation, 2)
         write_record(self.record)
 
