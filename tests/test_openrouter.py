@@ -93,7 +93,14 @@ def test_load_catalog_appends_zai_models_without_caching_them(isolated_home, sam
 
 def test_load_catalog_without_an_index_returns_static_models(isolated_home) -> None:
     assert not catalog_path().exists()
-    assert load_catalog() == [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS, *INCO_MODELS]
+    static = [
+        *ZAI_MODELS,
+        *CURSOR_MODELS,
+        *WAFER_MODELS,
+        *FIREWORKS_MODELS,
+        *INCO_MODELS,
+    ]
+    assert load_catalog() == static
 
 
 def test_refresh_catalog_without_a_credential_needs_no_network(isolated_home, monkeypatch) -> None:
