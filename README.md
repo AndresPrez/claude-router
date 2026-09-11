@@ -105,7 +105,7 @@ cancelled runs.
 | `clr check MODEL [--yes]` | Confirm and run one billable Claude Code tool round-trip |
 | `clr setup` | Run the install-time key and model setup again |
 | `clr select [MODEL]` | Replace `/model` favorites exactly |
-| `clr config` | Replace and validate the stored OpenRouter key |
+| `clr config --openrouter-key` | Store (and validate) an OpenRouter key |
 | `clr config --zai-key` | Store a Z.ai Coding Plan key |
 | `clr config --wafer-key` | Store a Wafer Serverless key |
 | `clr config --fireworks-key` | Store a Fireworks AI key |
