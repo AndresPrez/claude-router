@@ -40,6 +40,7 @@ def new_record(route: str, model: str) -> dict[str, Any]:
         "cache_read_tokens": None,
         "cache_creation_tokens": None,
         "tokens_per_sec": None,
+        "decode_tokens_per_sec": None,
     }
 
 
@@ -148,6 +149,10 @@ class MetricsRecorder:
         output = self.record.get("output_tokens")
         if isinstance(output, int) and output > 0 and duration > 0:
             self.record["tokens_per_sec"] = round(output / duration, 2)
+            ttft = self.record.get("ttft_ms")
+            generation = duration - (ttft / 1000 if isinstance(ttft, int) else 0)
+            if generation > 0:
+                self.record["decode_tokens_per_sec"] = round(output / generation, 2)
         write_record(self.record)
 
 
@@ -220,6 +225,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             "cache_creation_tokens": 0,
             "output_tokens_streamed": 0,
             "stream_seconds": 0.0,
+            "generation_seconds": 0.0,
             "ttft_total_ms": 0,
             "ttft_samples": 0,
         }
@@ -250,6 +256,10 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         ):
             bucket["output_tokens_streamed"] += output
             bucket["stream_seconds"] += duration / 1000
+            ttft = record.get("ttft_ms")
+            bucket["generation_seconds"] += max(
+                duration - (ttft if isinstance(ttft, int) else 0), 1
+            ) / 1000
         ttft = record.get("ttft_ms")
         if isinstance(ttft, int) and ttft >= 0:
             bucket["ttft_total_ms"] += ttft
@@ -270,6 +280,11 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             if bucket["stream_seconds"] > 0
             else None
         )
+        decode_tps = (
+            bucket["output_tokens_streamed"] / bucket["generation_seconds"]
+            if bucket["generation_seconds"] > 0
+            else None
+        )
         avg_ttft = (
             bucket["ttft_total_ms"] / bucket["ttft_samples"]
             if bucket["ttft_samples"]
@@ -286,6 +301,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "cache_read_tokens": bucket["cache_read_tokens"],
                 "cache_creation_tokens": bucket["cache_creation_tokens"],
                 "tokens_per_sec": round(tps, 2) if tps else None,
+                "decode_tokens_per_sec": round(decode_tps, 2) if decode_tps else None,
                 "avg_ttft_ms": round(avg_ttft) if avg_ttft is not None else None,
             }
         )
@@ -303,14 +319,16 @@ def format_summary(days: int, model_filter: str | None = None) -> str:
         f"Router metrics — last {days} day(s) — {summary['totals']['requests']} request(s)",
         "",
         f"{'route':<11} {'model':<22} {'req':>5} {'err':>4} {'in tok':>10} "
-        f"{'out tok':>9} {'cache rd':>10} {'cache wr':>10} {'tok/s':>7} {'ttft ms':>8}",
+        f"{'out tok':>9} {'cache rd':>10} {'cache wr':>10} {'tok/s':>7} "
+        f"{'dec t/s':>7} {'ttft ms':>8}",
     ]
     for row in summary["models"]:
         lines.append(
             f"{row['route']:<11.11} {row['model']:<22.22} {row['requests']:>5} "
             f"{row['errors']:>4} {row['input_tokens']:>10} {row['output_tokens']:>9} "
             f"{row['cache_read_tokens']:>10} {row['cache_creation_tokens']:>10} "
-            f"{_fmt(row['tokens_per_sec']):>7} {_fmt(row['avg_ttft_ms']):>8}"
+            f"{_fmt(row['tokens_per_sec']):>7} {_fmt(row['decode_tokens_per_sec']):>7} "
+            f"{_fmt(row['avg_ttft_ms']):>8}"
         )
     totals = summary["totals"]
     lines.append(
