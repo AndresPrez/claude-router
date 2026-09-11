@@ -210,9 +210,14 @@ def _rotate_if_needed(path: Path, incoming: int) -> None:
         pass
 
 
-def load_records(days: int, model_filter: str | None = None) -> list[dict[str, Any]]:
+def load_records(
+    days: int,
+    model_filter: str | None = None,
+    route_filter: str | None = None,
+) -> list[dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     needle = model_filter.casefold() if model_filter else None
+    route_needle = route_filter.casefold() if route_filter else None
     records: list[dict[str, Any]] = []
     path = metrics_path()
     for candidate in (path.with_suffix(".jsonl.1"), path):
@@ -239,6 +244,8 @@ def load_records(days: int, model_filter: str | None = None) -> list[dict[str, A
                     except ValueError:
                         pass
                 if needle and needle not in str(record.get("model", "")).casefold():
+                    continue
+                if route_needle and route_needle not in str(record.get("route", "")).casefold():
                     continue
                 records.append(record)
     return records
@@ -354,8 +361,12 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {"models": models, "totals": totals}
 
 
-def format_summary(days: int, model_filter: str | None = None) -> str:
-    records = load_records(days, model_filter)
+def format_summary(
+    days: int,
+    model_filter: str | None = None,
+    route_filter: str | None = None,
+) -> str:
+    records = load_records(days, model_filter, route_filter)
     if not records:
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
     summary = summarize(records)
@@ -384,9 +395,13 @@ def format_summary(days: int, model_filter: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def format_histogram(days: int, model_filter: str | None = None) -> str:
+def format_histogram(
+    days: int,
+    model_filter: str | None = None,
+    route_filter: str | None = None,
+) -> str:
     """Render requests per hour as an ASCII histogram segmented by route."""
-    records = load_records(days)
+    records = load_records(days, model_filter, route_filter)
     if model_filter:
         needle = model_filter.casefold()
         records = [r for r in records if needle in str(r.get("model", "")).casefold()]
