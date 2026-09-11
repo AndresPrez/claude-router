@@ -137,6 +137,37 @@ def test_summarize_aggregates_per_model(tmp_path, monkeypatch) -> None:
     assert row["avg_ttft_ms"] == 500
 
 
+def test_summarize_decodes_only_measurable_streams(tmp_path, monkeypatch) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+    for out, dur, ttft in ((500, 4000, 1000), (10, 3000, 1000)):
+        write_record(
+            {
+                "at": "2026-09-12T12:00:00+00:00",
+                "route": "inco",
+                "model": "glm-5.3-flash:fast",
+                "stream": True,
+                "status": 200,
+                "error": None,
+                "duration_ms": dur,
+                "ttft_ms": ttft,
+                "input_tokens": 1,
+                "output_tokens": out,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+                "tokens_per_sec": None,
+                "decode_tokens_per_sec": None,
+            }
+        )
+
+    row = summarize(load_records(days=1))["models"][0]
+
+    # only the 500-token request counts: 500 tokens / 3s generation
+    assert row["decode_tokens_per_sec"] == round(500 / 3, 2)
+    # e2e still counts both: 510 tokens / 7s
+    assert row["tokens_per_sec"] == round(510 / 7, 2)
+
+
 def test_format_summary_renders_table(tmp_path, monkeypatch, capsys) -> None:
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)

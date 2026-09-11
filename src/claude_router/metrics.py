@@ -249,6 +249,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
                 bucket[field] += value
         output = record.get("output_tokens")
         duration = record.get("duration_ms")
+        ttft = record.get("ttft_ms")
         if (
             record.get("stream")
             and isinstance(output, int)
@@ -258,10 +259,12 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         ):
             bucket["output_tokens_streamed"] += output
             bucket["stream_seconds"] += duration / 1000
-            ttft = record.get("ttft_ms")
-            bucket["generation_seconds"] += max(
-                duration - (ttft if isinstance(ttft, int) else 0), 1
-            ) / 1000
+            # Decode rate only counts responses with a measurable generation
+            # phase; tiny responses are chunk-arrival-bound, not decode-bound.
+            if output >= 100:
+                bucket["generation_seconds"] += max(
+                    duration - (ttft if isinstance(ttft, int) else 0), 100
+                ) / 1000
         ttft = record.get("ttft_ms")
         if isinstance(ttft, int) and ttft >= 0:
             bucket["ttft_total_ms"] += ttft
