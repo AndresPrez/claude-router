@@ -56,6 +56,10 @@ def wafer_credential_path() -> Path:
     return config_dir() / "wafer-credential"
 
 
+def fireworks_credential_path() -> Path:
+    return config_dir() / "fireworks-credential"
+
+
 def router_token_path() -> Path:
     return config_dir() / "router-token"
 

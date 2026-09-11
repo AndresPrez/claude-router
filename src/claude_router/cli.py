@@ -35,6 +35,13 @@ from .cursor import (
 from .cursor import (
     validate_cursor_key_shape as _validate_cursor_key_shape,
 )
+from .fireworks import (
+    read_fireworks_credential,
+    write_fireworks_credential,
+)
+from .fireworks import (
+    validate_fireworks_key_shape as _validate_fireworks_key_shape,
+)
 from .launcher import has_native_login, launch_claude
 from .metrics import format_histogram, format_summary, load_records
 from .metrics import summarize as summarize_metrics
@@ -63,6 +70,7 @@ from .paths import (
     claude_settings_path,
     credential_path,
     cursor_credential_path,
+    fireworks_credential_path,
     wafer_credential_path,
     zai_credential_path,
 )
@@ -241,6 +249,16 @@ def parser() -> argparse.ArgumentParser:
         help="read and store a Wafer Serverless API key from stdin",
     )
     config.add_argument(
+        "--fireworks-key",
+        action="store_true",
+        help="prompt to store a Fireworks AI API key",
+    )
+    config.add_argument(
+        "--fireworks-key-stdin",
+        action="store_true",
+        help="read and store a Fireworks AI API key from stdin",
+    )
+    config.add_argument(
         "--check-confirmation",
         choices=("ask", "never"),
         help="ask before billable model checks, or never ask",
@@ -408,6 +426,21 @@ def _read_wafer_key(*, from_stdin: bool) -> str:
             return existing
         key = _masked_input("Wafer API key: ").strip()
     validate_wafer_key_shape(key)
+    return key
+
+
+def _read_fireworks_key(*, from_stdin: bool) -> str:
+    if from_stdin:
+        key = sys.stdin.readline().strip()
+    else:
+        try:
+            existing = read_fireworks_credential()
+        except RuntimeError:
+            existing = None
+        if existing and _confirm_key_reuse(fireworks_credential_path(), "Fireworks API key"):
+            return existing
+        key = _masked_input("Fireworks API key: ").strip()
+    _validate_fireworks_key_shape(key)
     return key
 
 
@@ -745,6 +778,8 @@ def command_config(
     cursor_key_stdin: bool,
     wafer_key: bool,
     wafer_key_stdin: bool,
+    fireworks_key: bool,
+    fireworks_key_stdin: bool,
     check_confirmation: str | None,
 ) -> int:
     if check_confirmation is not None:
@@ -810,6 +845,26 @@ def command_config(
         write_wafer_credential(_read_wafer_key(from_stdin=wafer_key_stdin))
         assert_private_files()
         print(f"Wafer credential updated: {wafer_credential_path()} (mode 0600)")
+        return 0
+    if fireworks_key or fireworks_key_stdin:
+        if (
+            key_stdin
+            or no_validate
+            or anthropic_auth is not None
+            or anthropic_key_stdin
+            or zai_key
+            or zai_key_stdin
+            or cursor_key
+            or cursor_key_stdin
+            or wafer_key
+            or wafer_key_stdin
+        ):
+            raise ValueError("configure Fireworks separately from other credentials")
+        if fireworks_key and fireworks_key_stdin:
+            raise ValueError("use --fireworks-key or --fireworks-key-stdin, not both")
+        write_fireworks_credential(_read_fireworks_key(from_stdin=fireworks_key_stdin))
+        assert_private_files()
+        print(f"Fireworks credential updated: {fireworks_credential_path()} (mode 0600)")
         return 0
     if key_stdin and (anthropic_auth is not None or anthropic_key_stdin):
         raise ValueError("configure OpenRouter and Anthropic credentials in separate commands")
@@ -1022,6 +1077,8 @@ def main(argv: list[str] | None = None) -> int:
                 cursor_key_stdin=args.cursor_key_stdin,
                 wafer_key=args.wafer_key,
                 wafer_key_stdin=args.wafer_key_stdin,
+                fireworks_key=args.fireworks_key,
+                fireworks_key_stdin=args.fireworks_key_stdin,
                 check_confirmation=args.check_confirmation,
             )
         if args.command == "metrics":

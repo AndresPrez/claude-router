@@ -698,3 +698,22 @@ def test_wafer_route_payload_rewrites_model_and_strips_patterns() -> None:
 
     assert (route, model, routed["model"]) == ("wafer", "GLM-5.3", "GLM-5.3")
     assert "pattern" not in props["field"]
+
+
+def test_fireworks_classification_and_route() -> None:
+    assert classify_model("clr/fireworks/glm-5p2", {"glm-5p2"}) == ("fireworks", "glm-5p2")
+    with pytest.raises(ValueError, match="Fireworks model is not in the clr favorites allowlist"):
+        classify_model("clr/fireworks/glm-5p2", set())
+
+
+def test_fireworks_route_payload_rewrites_model() -> None:
+    payload = {
+        "model": "clr/fireworks/deepseek-v4-pro-0813",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {"deepseek-v4-pro-0813"})
+    routed = json.loads(body)
+
+    expected = "deepseek-v4-pro-0813"
+    assert (route, model, routed["model"]) == ("fireworks", expected, expected)

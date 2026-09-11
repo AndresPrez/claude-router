@@ -24,6 +24,7 @@ from .cursor import (
     read_cursor_credential,
     run_messages,
 )
+from .fireworks import FIREWORKS_UPSTREAM, read_fireworks_credential
 from .metrics import MetricsRecorder
 from .models import (
     CONTEXT_BUDGET_SUFFIX,
@@ -334,6 +335,10 @@ def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
             if bare_model not in favorites:
                 raise ValueError("Wafer model is not in the clr favorites allowlist")
             return "wafer", bare_model
+        if route_of_namespaced(model) == "fireworks":
+            if bare_model not in favorites:
+                raise ValueError("Fireworks model is not in the clr favorites allowlist")
+            return "fireworks", bare_model
         if not hybrid_openrouter_allowed(bare_model):
             raise ValueError("Anthropic and automatic models are blocked on the OpenRouter route")
         if bare_model not in favorites:
@@ -359,12 +364,12 @@ def route_payload(
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), str):
         raise ValueError("request body must contain a string model")
     route, upstream_model = classify_model(payload["model"], favorites)
-    if route in {"openrouter", "zai", "cursor", "wafer"}:
+    if route in {"openrouter", "zai", "cursor", "wafer", "fireworks"}:
         payload["model"] = upstream_model
         if route == "openrouter" and upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
             _repair_gemini_tool_schemas(payload)
             _remove_gemini_adaptive_thinking(payload)
-        if route in {"zai", "wafer"}:
+        if route in {"zai", "wafer", "fireworks"}:
             _repair_zai_tool_schemas(payload)
         modalities = (model_modalities or {}).get(upstream_model)
         if modalities is not None and "image" not in modalities:
@@ -438,6 +443,8 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 upstream = self.router.zai_upstream
             elif route == "wafer":
                 upstream = self.router.wafer_upstream
+            elif route == "fireworks":
+                upstream = self.router.fireworks_upstream
             else:
                 upstream = self.router.anthropic_upstream
             headers = self._upstream_headers(route, model, len(body))
@@ -489,6 +496,8 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             headers["Authorization"] = f"Bearer {read_zai_credential()}"
         elif route == "wafer":
             headers["Authorization"] = f"Bearer {read_wafer_credential()}"
+        elif route == "fireworks":
+            headers["Authorization"] = f"Bearer {read_fireworks_credential()}"
         elif self.router.anthropic_auth == "api":
             headers["X-Api-Key"] = read_anthropic_credential()
         else:
@@ -732,6 +741,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         openrouter_upstream: str = OPENROUTER_UPSTREAM,
         zai_upstream: str = ZAI_UPSTREAM,
         wafer_upstream: str = WAFER_UPSTREAM,
+        fireworks_upstream: str = FIREWORKS_UPSTREAM,
         model_modalities: dict[str, frozenset[str]] | None = None,
         record_status: bool = True,
         cursor_registry: AgentRegistry | None = None,
@@ -747,6 +757,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         self.openrouter_upstream = openrouter_upstream
         self.zai_upstream = zai_upstream
         self.wafer_upstream = wafer_upstream
+        self.fireworks_upstream = fireworks_upstream
         self.model_modalities = model_modalities or {}
         self.record_status = record_status
         self.cursor_registry = cursor_registry or AgentRegistry()

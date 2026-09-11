@@ -12,6 +12,7 @@ OPENROUTER_MODEL_PREFIX = "clr/openrouter/"
 ZAI_MODEL_PREFIX = "clr/zai/"
 CURSOR_MODEL_PREFIX = "clr/cursor/"
 WAFER_MODEL_PREFIX = "clr/wafer/"
+FIREWORKS_MODEL_PREFIX = "clr/fireworks/"
 # Claude Code's client-side context-budget marker. Upstreams receive the bare
 # id: Z.ai rejects the suffix with error 1211 (unknown model).
 CONTEXT_BUDGET_SUFFIX = "[1m]"
@@ -118,6 +119,58 @@ WAFER_MODELS: list[dict[str, Any]] = [
 ]
 WAFER_MODEL_IDS = frozenset(m["id"] for m in WAFER_MODELS)
 
+# Static Fireworks Serverless catalog. Ids are the Fireworks serverless model
+# slugs (e.g. glm-5p2); GET https://api.fireworks.ai/inference/v1/models lists
+# the full ids when the credential is configured.
+FIREWORKS_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "glm-5p2",
+        "name": "GLM 5.2 on Fireworks",
+        "description": "Z.ai GLM 5.2 served on Fireworks serverless",
+        "provider": "fireworks",
+        "context_length": 200_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "kimi-k3",
+        "name": "Kimi K3 on Fireworks",
+        "description": "Moonshot Kimi K3 served on Fireworks serverless",
+        "provider": "fireworks",
+        "context_length": 256_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text", "image"]},
+    },
+    {
+        "id": "deepseek-v4-pro-0813",
+        "name": "DeepSeek V4 Pro on Fireworks",
+        "description": "DeepSeek V4 Pro (0813) served on Fireworks serverless",
+        "provider": "fireworks",
+        "context_length": 200_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "deepseek-v4-flash-0731",
+        "name": "DeepSeek V4 Flash on Fireworks",
+        "description": "DeepSeek V4 Flash (0731) served on Fireworks serverless",
+        "provider": "fireworks",
+        "context_length": 200_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+    {
+        "id": "kimi-k2p6",
+        "name": "Kimi K2.6 on Fireworks",
+        "description": "Moonshot Kimi K2.6 served on Fireworks serverless",
+        "provider": "fireworks",
+        "context_length": 256_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text", "image"]},
+    },
+]
+FIREWORKS_MODEL_IDS = frozenset(m["id"] for m in FIREWORKS_MODELS)
+
 # Static Cursor Cloud Agents catalog. Model ids must match GET /v1/models on
 # api.cursor.com. Runs are agent tasks, so these entries honestly advertise
 # no Messages-API tool support.
@@ -170,6 +223,8 @@ def provider_of(model_id: str) -> str:
         return "cursor"
     if model_id in WAFER_MODEL_IDS:
         return "wafer"
+    if model_id in FIREWORKS_MODEL_IDS:
+        return "fireworks"
     return "openrouter"
 
 
@@ -236,6 +291,7 @@ def namespaced_model(model_id: str) -> str:
         "zai": ZAI_MODEL_PREFIX,
         "cursor": CURSOR_MODEL_PREFIX,
         "wafer": WAFER_MODEL_PREFIX,
+        "fireworks": FIREWORKS_MODEL_PREFIX,
     }.get(provider, OPENROUTER_MODEL_PREFIX)
     return f"{prefix}{model_id}"
 
@@ -246,6 +302,7 @@ def original_model(model_id: str) -> str | None:
         OPENROUTER_MODEL_PREFIX,
         CURSOR_MODEL_PREFIX,
         WAFER_MODEL_PREFIX,
+        FIREWORKS_MODEL_PREFIX,
     ):
         if model_id.startswith(prefix):
             original = model_id[len(prefix) :]
@@ -263,6 +320,8 @@ def route_of_namespaced(model_id: str) -> str | None:
         return "cursor"
     if model_id.startswith(WAFER_MODEL_PREFIX):
         return "wafer"
+    if model_id.startswith(FIREWORKS_MODEL_PREFIX):
+        return "fireworks"
     return None
 
 
@@ -382,6 +441,7 @@ def picker_description(model: dict[str, Any]) -> str:
         "zai": "Z.ai Coding Plan via claude-router",
         "cursor": "Cursor Cloud Agents via claude-router",
         "wafer": "Wafer Serverless via claude-router",
+        "fireworks": "Fireworks Serverless via claude-router",
     }.get(provider, "OpenRouter via claude-router")
     parts = [
         str(model.get("id", "")),
@@ -422,6 +482,7 @@ def picker_row(model: dict[str, Any], *, hybrid: bool = False) -> dict[str, str]
         "zai": " · Z.ai",
         "cursor": " · Cursor",
         "wafer": " · Wafer",
+        "fireworks": " · Fireworks",
     }.get(provider_of(model_id), " · OpenRouter")
     return {
         "model": (
