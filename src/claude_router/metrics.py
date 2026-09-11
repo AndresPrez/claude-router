@@ -348,7 +348,16 @@ def format_histogram(days: int, model_filter: str | None = None) -> str:
         if isinstance(record.get("ttft_ms"), int):
             bucket["ttft"].append(record["ttft_ms"])
 
-    characters = {"anthropic": "█", "zai": "▓", "cursor": "░"}
+    characters = {
+        "anthropic": "█",
+        "zai": "▓",
+        "cursor": "░",
+        "wafer": "▒",
+        "fireworks": "▚",
+        "inco": "▞",
+        "openrouter": "░",
+        "rejected": "·",
+    }
     width = 48
     busiest = max(
         (sum(bucket["routes"].values()) for bucket in hours.values()), default=0
