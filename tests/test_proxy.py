@@ -669,3 +669,86 @@ def test_openrouter_route_strips_context_budget_suffix() -> None:
     routed = json.loads(body)
 
     assert (route, model, routed["model"]) == ("openrouter", GLM, GLM)
+
+
+def test_wafer_classification_and_route() -> None:
+    assert classify_model("clr/wafer/GLM-5.3", {"GLM-5.3"}) == ("wafer", "GLM-5.3")
+    with pytest.raises(ValueError, match="Wafer model is not in the clr favorites allowlist"):
+        classify_model("clr/wafer/GLM-5.3", set())
+
+
+def test_wafer_route_payload_rewrites_model_and_strips_patterns() -> None:
+    payload = {
+        "model": "clr/wafer/GLM-5.3[1m]",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [
+            {
+                "name": "artifact",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"field": {"type": "string", "pattern": "^[^\\p{Cc}]+$"}},
+                },
+            }
+        ],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {"GLM-5.3"})
+    routed = json.loads(body)
+    props = routed["tools"][0]["input_schema"]["properties"]
+
+    assert (route, model, routed["model"]) == ("wafer", "GLM-5.3", "GLM-5.3")
+    assert "pattern" not in props["field"]
+
+
+def test_fireworks_classification_and_route() -> None:
+    assert classify_model("clr/fireworks/glm-5p2", {"glm-5p2"}) == ("fireworks", "glm-5p2")
+    with pytest.raises(ValueError, match="Fireworks model is not in the clr favorites allowlist"):
+        classify_model("clr/fireworks/glm-5p2", set())
+
+
+def test_fireworks_route_payload_rewrites_model() -> None:
+    payload = {
+        "model": "clr/fireworks/deepseek-v4-pro-0813",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(json.dumps(payload).encode(), {"deepseek-v4-pro-0813"})
+    routed = json.loads(body)
+
+    expected = "deepseek-v4-pro-0813"
+    assert (route, model, routed["model"]) == ("fireworks", expected, expected)
+
+
+def test_fireworks_service_tier_injected_when_configured() -> None:
+    payload = {
+        "model": "clr/fireworks/glm-5p3-flash",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    route, model, body = route_payload(
+        json.dumps(payload).encode(),
+        {"glm-5p3-flash"},
+        fireworks_service_tier="priority",
+    )
+    routed = json.loads(body)
+
+    assert route == "fireworks"
+    assert routed["service_tier"] == "priority"
+
+
+def test_fireworks_service_tier_omitted_by_default() -> None:
+    payload = {
+        "model": "clr/fireworks/glm-5p3-flash",
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    _, _, body = route_payload(json.dumps(payload).encode(), {"glm-5p3-flash"})
+    routed = json.loads(body)
+
+    assert "service_tier" not in routed
+
+
+def test_inco_classification_and_route() -> None:
+    assert classify_model("clr/inco/GLM-5.3", {"GLM-5.3"}) == ("inco", "GLM-5.3")
+    with pytest.raises(ValueError, match="Inco model is not in the clr favorites allowlist"):
+        classify_model("clr/inco/GLM-5.3", set())

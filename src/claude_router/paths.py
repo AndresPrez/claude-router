@@ -52,6 +52,18 @@ def cursor_credential_path() -> Path:
     return config_dir() / "cursor-credential"
 
 
+def wafer_credential_path() -> Path:
+    return config_dir() / "wafer-credential"
+
+
+def fireworks_credential_path() -> Path:
+    return config_dir() / "fireworks-credential"
+
+
+def inco_credential_path() -> Path:
+    return config_dir() / "inco-credential"
+
+
 def router_token_path() -> Path:
     return config_dir() / "router-token"
 
@@ -90,6 +102,10 @@ def router_log_path() -> Path:
 
 def router_status_path() -> Path:
     return state_dir() / "router-status.json"
+
+
+def metrics_path() -> Path:
+    return state_dir() / "metrics.jsonl"
 
 
 def systemd_unit_path() -> Path:

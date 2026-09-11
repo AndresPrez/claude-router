@@ -20,9 +20,13 @@ from .cursor import (
     bridge_frames,
     cancel_run,
     error_frame,
+    fetch_run_usage,
     read_cursor_credential,
     run_messages,
 )
+from .fireworks import FIREWORKS_UPSTREAM, read_fireworks_credential
+from .inco import INCO_UPSTREAM, read_inco_credential
+from .metrics import MetricsRecorder
 from .models import (
     CONTEXT_BUDGET_SUFFIX,
     OPENROUTER_MODEL_PREFIX,
@@ -36,6 +40,7 @@ from .openrouter import load_catalog, read_credential
 from .paths import router_status_path, router_token_path
 from .settings import favorite_ids, load_preferences, refresh_managed_subagents
 from .storage import atomic_write_json
+from .wafer import WAFER_UPSTREAM, read_wafer_credential
 from .zai import ZAI_UPSTREAM, read_zai_credential
 
 DEFAULT_HOST = "127.0.0.1"
@@ -327,6 +332,18 @@ def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
             if bare_model not in favorites:
                 raise ValueError("Cursor model is not in the clr favorites allowlist")
             return "cursor", bare_model
+        if route_of_namespaced(model) == "wafer":
+            if bare_model not in favorites:
+                raise ValueError("Wafer model is not in the clr favorites allowlist")
+            return "wafer", bare_model
+        if route_of_namespaced(model) == "fireworks":
+            if bare_model not in favorites:
+                raise ValueError("Fireworks model is not in the clr favorites allowlist")
+            return "fireworks", bare_model
+        if route_of_namespaced(model) == "inco":
+            if bare_model not in favorites:
+                raise ValueError("Inco model is not in the clr favorites allowlist")
+            return "inco", bare_model
         if not hybrid_openrouter_allowed(bare_model):
             raise ValueError("Anthropic and automatic models are blocked on the OpenRouter route")
         if bare_model not in favorites:
@@ -344,6 +361,7 @@ def route_payload(
     body: bytes,
     favorites: set[str],
     model_modalities: dict[str, frozenset[str]] | None = None,
+    fireworks_service_tier: str | None = None,
 ) -> tuple[str, str, bytes]:
     try:
         payload = json.loads(body)
@@ -352,13 +370,15 @@ def route_payload(
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), str):
         raise ValueError("request body must contain a string model")
     route, upstream_model = classify_model(payload["model"], favorites)
-    if route in {"openrouter", "zai", "cursor"}:
+    if route in {"openrouter", "zai", "cursor", "wafer", "fireworks", "inco"}:
         payload["model"] = upstream_model
         if route == "openrouter" and upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
             _repair_gemini_tool_schemas(payload)
             _remove_gemini_adaptive_thinking(payload)
-        if route == "zai":
+        if route in {"zai", "wafer", "fireworks", "inco"}:
             _repair_zai_tool_schemas(payload)
+        if route == "fireworks" and fireworks_service_tier:
+            payload["service_tier"] = fireworks_service_tier
         modalities = (model_modalities or {}).get(upstream_model)
         if modalities is not None and "image" not in modalities:
             vision_hint = _vision_hint(favorites, model_modalities or {})
@@ -418,16 +438,26 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         try:
             route, model, body = route_payload(
-                body, self.router.favorites, self.router.model_modalities
+                body,
+                self.router.favorites,
+                self.router.model_modalities,
+                fireworks_service_tier=self.router.fireworks_service_tier,
             )
             if route == "cursor":
                 self._serve_cursor(model, body)
                 self._record_status("cursor", model, None)
                 return
+            recorder = MetricsRecorder(route, model)
             if route == "openrouter":
                 upstream = self.router.openrouter_upstream
             elif route == "zai":
                 upstream = self.router.zai_upstream
+            elif route == "wafer":
+                upstream = self.router.wafer_upstream
+            elif route == "fireworks":
+                upstream = self.router.fireworks_upstream
+            elif route == "inco":
+                upstream = self.router.inco_upstream
             else:
                 upstream = self.router.anthropic_upstream
             headers = self._upstream_headers(route, model, len(body))
@@ -436,6 +466,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 self.path,
                 headers,
                 body,
+                recorder=recorder,
                 normalize_gemini=(
                     route == "openrouter" and model.casefold().startswith(GEMINI_MODEL_PREFIX)
                 ),
@@ -469,13 +500,23 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         }
         headers["Content-Length"] = str(content_length)
         headers["Accept-Encoding"] = "identity"
-        headers.setdefault("Content-Type", "application/json")
+        # Case-insensitive: a client that sent a lowercase content-type must
+        # not end up forwarded alongside a capitalized duplicate (Fireworks
+        # rejects requests carrying two Content-Type headers).
+        if not any(key.casefold() == "content-type" for key in headers):
+            headers["Content-Type"] = "application/json"
         if route == "openrouter":
             headers["Authorization"] = f"Bearer {read_credential()}"
             headers["HTTP-Referer"] = "https://github.com/AndresPrez/claude-router"
             headers["X-Title"] = "Claude Router"
         elif route == "zai":
             headers["Authorization"] = f"Bearer {read_zai_credential()}"
+        elif route == "wafer":
+            headers["Authorization"] = f"Bearer {read_wafer_credential()}"
+        elif route == "fireworks":
+            headers["Authorization"] = f"Bearer {read_fireworks_credential()}"
+        elif route == "inco":
+            headers["Authorization"] = f"Bearer {read_inco_credential()}"
         elif self.router.anthropic_auth == "api":
             headers["X-Api-Key"] = read_anthropic_credential()
         else:
@@ -494,6 +535,7 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         headers: dict[str, str],
         body: bytes,
         *,
+        recorder: MetricsRecorder | None = None,
         normalize_gemini: bool = False,
     ) -> None:
         connection_type, hostname, port, base_path = _target(upstream)
@@ -502,10 +544,16 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             kwargs["context"] = ssl.create_default_context()
         connection = connection_type(hostname, port, **kwargs)
         path = f"{base_path}{request_path}"
+        tee: bytearray | None = None
+        sse_buffer = b""
+        upstream_status = 0
         try:
             connection.request("POST", path, body=body, headers=headers)
             response = connection.getresponse()
             content_type = response.getheader("Content-Type", "")
+            upstream_status = response.status
+            if recorder is not None:
+                recorder.record["stream"] = "text/event-stream" in content_type.casefold()
             self.send_response(response.status, response.reason)
             for key, value in response.getheaders():
                 if key.casefold() not in HOP_BY_HOP | {"content-length", "server", "date"}:
@@ -516,16 +564,42 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 self._forward_gemini_sse(response)
             elif normalize_gemini:
                 self._write_chunk(_remove_gemini_thinking_content(response.read()))
+            elif "text/event-stream" in content_type.casefold():
+                # Stream events through untouched while tapping usage counters.
+                while chunk := response.read1(64 * 1024):
+                    if recorder is not None:
+                        recorder.mark_first_byte()
+                    sse_buffer += chunk
+                    while (split := _next_sse_event(sse_buffer)) is not None:
+                        event, sse_buffer = split
+                        if recorder is not None:
+                            recorder.observe_sse(event)
+                    self._write_chunk(chunk)
             else:
                 # ``read`` may wait for the full requested size or EOF, which turns
                 # SSE token streams into one buffered completion. ``read1`` makes
                 # at most one underlying read and returns available bytes promptly.
                 while chunk := response.read1(64 * 1024):
+                    if recorder is not None:
+                        recorder.mark_first_byte()
+                        if len(tee or b"") < 4_000_000:
+                            tee = bytearray() if tee is None else tee
+                            tee.extend(chunk)
                     self._write_chunk(chunk)
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
+            if recorder is not None:
+                if tee is not None:
+                    recorder.observe_json(bytes(tee))
+                recorder.finish(upstream_status)
         except (BrokenPipeError, ConnectionResetError):
+            if recorder is not None:
+                recorder.finish(upstream_status, error="client disconnected")
             return
+        except (OSError, http.client.HTTPException, RuntimeError) as exc:
+            if recorder is not None:
+                recorder.finish(upstream_status or 502, error=str(exc))
+            raise
         finally:
             connection.close()
 
@@ -557,6 +631,8 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
         if not isinstance(payload, dict):
             raise ValueError("request body must be a JSON object")
         credential = read_cursor_credential()
+        recorder = MetricsRecorder("cursor", model)
+        recorder.record["stream"] = bool(payload.get("stream"))
         active: dict[str, str] = {}
         frames = bridge_frames(
             payload,
@@ -575,29 +651,56 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             self.end_headers()
             try:
                 for frame in frames:
+                    recorder.mark_first_byte()
                     self._write_chunk(frame)
             except (BrokenPipeError, ConnectionResetError):
                 if "agent_id" in active:
                     cancel_run(
                         active["agent_id"], active["run_id"], active["credential"]
                     )
+                self._finish_cursor_usage(
+                    recorder, active, credential, "client disconnected"
+                )
                 return
             except CursorBridgeError as exc:
                 # Headers are already sent; report as an Anthropic SSE error.
+                recorder.finish(502, error=str(exc))
                 self._write_chunk(error_frame(str(exc)))
             self.wfile.write(b"0\r\n\r\n")
             self.wfile.flush()
+            self._finish_cursor_usage(recorder, active, credential, None)
             return
-        response = run_messages(
-            payload,
-            model,
-            self.router.cursor_registry,
-            credential,
-            repos=self.router.cursor_repos,
-            mode=self.router.cursor_mode,
-            active=active,
-        )
+        try:
+            response = run_messages(
+                payload,
+                model,
+                self.router.cursor_registry,
+                credential,
+                repos=self.router.cursor_repos,
+                mode=self.router.cursor_mode,
+                active=active,
+            )
+        except CursorBridgeError as exc:
+            recorder.finish(502, error=str(exc))
+            raise
+        recorder.finish(200)
         self._json_response(200, response)
+        self._finish_cursor_usage(recorder, active, credential, None)
+
+    def _finish_cursor_usage(
+        self,
+        recorder: MetricsRecorder,
+        active: dict[str, str],
+        credential: str,
+        error: str | None,
+    ) -> None:
+        """Fold real token usage into the record via the usage endpoint."""
+        usage = None
+        if "agent_id" in active:
+            usage = fetch_run_usage(
+                active["agent_id"], active.get("run_id", ""), credential
+            )
+        recorder.finish(200 if error is None else 499, error=error, usage=usage)
 
     def _record_status(self, route: str, model: str, error: str | None) -> None:
         if not self.router.record_status:
@@ -656,11 +759,15 @@ class HybridRouterServer(ThreadingHTTPServer):
         anthropic_upstream: str = ANTHROPIC_UPSTREAM,
         openrouter_upstream: str = OPENROUTER_UPSTREAM,
         zai_upstream: str = ZAI_UPSTREAM,
+        wafer_upstream: str = WAFER_UPSTREAM,
+        fireworks_upstream: str = FIREWORKS_UPSTREAM,
+        inco_upstream: str = INCO_UPSTREAM,
         model_modalities: dict[str, frozenset[str]] | None = None,
         record_status: bool = True,
         cursor_registry: AgentRegistry | None = None,
         cursor_repos: list[str] | None = None,
         cursor_mode: str = "plan",
+        fireworks_service_tier: str | None = None,
     ) -> None:
         if anthropic_auth not in {"max", "api"}:
             raise ValueError("Anthropic authentication must be max or api")
@@ -670,11 +777,15 @@ class HybridRouterServer(ThreadingHTTPServer):
         self.anthropic_upstream = anthropic_upstream
         self.openrouter_upstream = openrouter_upstream
         self.zai_upstream = zai_upstream
+        self.wafer_upstream = wafer_upstream
+        self.fireworks_upstream = fireworks_upstream
+        self.inco_upstream = inco_upstream
         self.model_modalities = model_modalities or {}
         self.record_status = record_status
         self.cursor_registry = cursor_registry or AgentRegistry()
         self.cursor_repos = cursor_repos
         self.cursor_mode = cursor_mode if cursor_mode in {"plan", "agent"} else "plan"
+        self.fireworks_service_tier = fireworks_service_tier
         super().__init__(address, HybridRouterHandler)
 
 
@@ -698,6 +809,9 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     cursor_mode = preferences.get("cursor_mode", "plan")
     if cursor_mode not in {"plan", "agent"}:
         raise RuntimeError("invalid cursor_mode preference")
+    fireworks_tier = preferences.get("fireworks_service_tier")
+    if fireworks_tier is not None and fireworks_tier not in {"standard", "priority"}:
+        raise RuntimeError("invalid fireworks_service_tier preference")
     # The newly installed router is the first new-version process started by
     # ``clr update``. Refreshing here upgrades installations from older
     # releases without requiring users to rerun setup or select.
@@ -710,6 +824,7 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         model_modalities=catalog_input_modalities(catalog),
         cursor_repos=cursor_repos,
         cursor_mode=cursor_mode,
+        fireworks_service_tier=fireworks_tier,
     )
     try:
         server.serve_forever()
