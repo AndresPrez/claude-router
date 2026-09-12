@@ -409,7 +409,14 @@ def format_histogram(
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
 
     hours: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"routes": defaultdict(int), "tps": [], "ttft": [], "errors": 0}
+        lambda: {
+            "routes": defaultdict(int),
+            "tps": [],
+            "decode": [],
+            "gen_points": [],
+            "ttft": [],
+            "errors": 0,
+        }
     )
     for record in records:
         at = record.get("at")
@@ -423,8 +430,21 @@ def format_histogram(
             bucket["errors"] += 1
         if isinstance(record.get("tokens_per_sec"), (int, float)):
             bucket["tps"].append(record["tokens_per_sec"])
+        out = record.get("output_tokens")
+        dur = record.get("duration_ms")
+        ttft = record.get("ttft_ms")
+        if isinstance(out, int) and isinstance(dur, int) and dur > 0:
+            generation = max(dur - (ttft if isinstance(ttft, int) else 0), 100)
+            if out >= 100:
+                bucket["decode"].append(out / generation * 1000)
+            if out >= 20:
+                bucket["gen_points"].append((out, generation))
         if isinstance(record.get("ttft_ms"), int):
             bucket["ttft"].append(record["ttft_ms"])
+
+    def hour_fit(points: list[tuple[int, int]]) -> float | None:
+        curve = fit_generation_curve(points)
+        return round(1000.0 / curve[1], 1) if curve and curve[2] >= 0.5 else None
 
     characters = {
         "anthropic": "█",
@@ -436,7 +456,7 @@ def format_histogram(
         "openrouter": "░",
         "rejected": "·",
     }
-    width = 48
+    width = 26
     busiest = max(
         (sum(bucket["routes"].values()) for bucket in hours.values()), default=0
     )
@@ -446,8 +466,8 @@ def format_histogram(
     lines = [
         f"Requests per hour — last {days} day(s) — {len(records)} total{scope}",
         "",
-        f"{'hour':<12} {'req':>4} {'err':>4}  {'distribution':<50} "
-        f"{'med tok/s':>9} {'med ttft':>9}",
+        f"{'hour':<12} {'req':>4} {'err':>4} {'distribution':<28} "
+        f"{'tok/s':>7} {'dec t/s':>8} {'fit t/s':>8} {'ttft':>6}",
     ]
     for hour in sorted(hours):
         bucket = hours[hour]
@@ -457,9 +477,13 @@ def format_histogram(
             for route, count in sorted(bucket["routes"].items())
         )[:width]
         tps = f"{median(bucket['tps']):.1f}" if bucket["tps"] else "-"
+        decode = f"{median(bucket['decode']):.1f}" if bucket["decode"] else "-"
+        fit = hour_fit(bucket["gen_points"])
+        fit_txt = f"{fit:.1f}" if fit else "-"
         ttft = f"{median(bucket['ttft']) / 1000:.1f}s" if bucket["ttft"] else "-"
         lines.append(
-            f"{hour:<12} {total:>4} {bucket['errors']:>4}  {bar:<50} {tps:>9} {ttft:>9}"
+            f"{hour:<12} {total:>4} {bucket['errors']:>4} {bar:<28} "
+            f"{tps:>7} {decode:>8} {fit_txt:>8} {ttft:>6}"
         )
     lines.append("")
     lines.append(

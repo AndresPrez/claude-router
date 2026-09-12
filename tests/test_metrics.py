@@ -263,6 +263,8 @@ def test_format_histogram_renders_scaled_bars(tmp_path, monkeypatch) -> None:
     assert "09-10 1" in out
     assert "▓" in out
     assert "50.0" in out
+    assert "dec t/s" in out
+    assert "fit t/s" in out
 
 
 def test_recorder_computes_decode_rate(tmp_path, monkeypatch) -> None:
