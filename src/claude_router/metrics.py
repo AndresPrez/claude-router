@@ -41,6 +41,7 @@ def new_record(route: str, model: str) -> dict[str, Any]:
         "cache_creation_tokens": None,
         "tokens_per_sec": None,
         "decode_tokens_per_sec": None,
+        "effort": None,
     }
 
 
@@ -143,8 +144,9 @@ def apply_cursor_usage(record: dict[str, Any], usage: dict[str, Any] | None) -> 
 class MetricsRecorder:
     """Collect one request's metrics and append a record on ``finish``."""
 
-    def __init__(self, route: str, model: str) -> None:
+    def __init__(self, route: str, model: str, effort: str | None = None) -> None:
         self.record = new_record(route, model)
+        self.record["effort"] = effort
         self._started = time.monotonic()
         self._finished = False
 

@@ -332,7 +332,8 @@ def test_zai_route_payload_rewrites_model_and_keeps_other_fields() -> None:
     routed = json.loads(body)
 
     assert (route, model, routed["model"]) == ("zai", ZAI, ZAI)
-    assert routed["max_tokens"] == 128
+    # default effort=high raises the token floor so thinking cannot truncate
+    assert routed["max_tokens"] == 8192
     assert routed["messages"] == payload["messages"]
 
 
@@ -752,3 +753,95 @@ def test_inco_classification_and_route() -> None:
     assert classify_model("clr/inco/GLM-5.3", {"GLM-5.3"}) == ("inco", "GLM-5.3")
     with pytest.raises(ValueError, match="Inco model is not in the clr favorites allowlist"):
         classify_model("clr/inco/GLM-5.3", set())
+
+
+def test_effort_high_stamped_by_default_on_flash_routes() -> None:
+    payload = {
+        "model": f"clr/zai/{ZAI}",
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+
+    _, _, body = route_payload(json.dumps(payload).encode(), {ZAI})
+    routed = json.loads(body)
+
+    assert routed["thinking"] == {"type": "adaptive"}
+    assert routed["output_config"]["effort"] == "high"
+    assert routed["max_tokens"] == 8192  # raised to the high floor
+
+
+def test_effort_respects_client_thinking_and_overrides() -> None:
+    with_thinking = {
+        "model": f"clr/zai/{ZAI}",
+        "thinking": {"type": "disabled"},
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    _, _, body = route_payload(json.dumps(with_thinking).encode(), {ZAI})
+    routed = json.loads(body)
+    assert routed["thinking"] == {"type": "disabled"}  # untouched
+    assert "output_config" not in routed
+
+    override = {
+        "model": "clr/fireworks/glm-5p3-flash",
+        "max_tokens": 200,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    _, _, body = route_payload(
+        json.dumps(override).encode(), {"glm-5p3-flash"},
+        effort_overrides={"fireworks": "low"},
+    )
+    routed = json.loads(body)
+    assert routed["output_config"]["effort"] == "low"
+    assert routed["max_tokens"] == 200  # low keeps the client cap
+
+    _, _, body = route_payload(
+        json.dumps(override).encode(), {"glm-5p3-flash"},
+        effort_overrides={"fireworks": "off"},
+    )
+    routed = json.loads(body)
+    assert "output_config" not in routed and "thinking" not in routed
+
+
+def test_effort_not_stamped_on_non_flash_routes() -> None:
+    payload = {
+        "model": "claude-fable-5-1",
+        "max_tokens": 128,
+        "messages": [{"role": "user", "content": "hello"}],
+    }
+    _, _, body = route_payload(json.dumps(payload).encode(), set())
+    routed = json.loads(body)
+    assert "thinking" not in routed and "output_config" not in routed
+
+
+def test_effort_inco_uses_hidden_switch_only_for_low() -> None:
+    low = {"model": "clr/inco/glm-5.3-flash:fast", "messages": [{"role": "user", "content": "x"}]}
+    _, _, body = route_payload(json.dumps(low).encode(), {"glm-5.3-flash:fast"})
+    routed = json.loads(body)
+    assert routed["reasoning"] == {"effort": "low"} if "effort" in str(
+        json.dumps(routed)
+    ) else True  # default high injects nothing on inco
+    assert "output_config" not in routed
+    assert routed.get("reasoning") is None  # default high -> natural state
+
+    forced = route_payload(
+        json.dumps(low).encode(), {"glm-5.3-flash:fast"},
+        effort_overrides={"inco": "low"},
+    )[2]
+    routed = json.loads(forced)
+    assert routed["reasoning"] == {"effort": "low"}
+
+
+def test_effort_wafer_low_maps_to_thinking_disabled() -> None:
+    payload = {"model": "clr/wafer/GLM-5.3-Flash", "messages": [{"role": "user", "content": "x"}]}
+    _, _, body = route_payload(
+        json.dumps(payload).encode(), {"GLM-5.3-Flash"},
+        effort_overrides={"wafer": "low"},
+    )
+    routed = json.loads(body)
+    assert routed["thinking"] == {"type": "disabled"}
+    assert "output_config" not in routed
+
+    # default high injects nothing on wafer
+    _, _, body = route_payload(json.dumps(payload).encode(), {"GLM-5.3-Flash"})
+    routed = json.loads(body)
+    assert "thinking" not in routed and "output_config" not in routed

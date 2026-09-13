@@ -1,6 +1,7 @@
 """Tests for router request metrics (metrics.jsonl)."""
 
 import json
+from datetime import datetime, timezone
 
 from claude_router import metrics as metrics_module
 from claude_router.metrics import (
@@ -143,7 +144,7 @@ def test_summarize_decodes_only_measurable_streams(tmp_path, monkeypatch) -> Non
     for out, dur, ttft in ((500, 4000, 1000), (10, 3000, 1000)):
         write_record(
             {
-                "at": "2026-09-12T12:00:00+00:00",
+                "at": datetime.now(timezone.utc).isoformat(),
                 "route": "inco",
                 "model": "glm-5.3-flash:fast",
                 "stream": True,
@@ -330,7 +331,7 @@ def test_min_tokens_threshold_raises_decode_population(tmp_path, monkeypatch) ->
     for out in (150, 300, 800):
         write_record(
             {
-                "at": "2026-09-12T12:00:00+00:00",
+                "at": datetime.now(timezone.utc).isoformat(),
                 "route": "inco",
                 "model": "glm-5.3-flash:fast",
                 "stream": True,

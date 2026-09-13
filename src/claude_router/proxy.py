@@ -318,6 +318,54 @@ def read_router_token() -> str:
     return _read_secret(router_token_path(), "router token")
 
 
+EFFORT_ROUTES = frozenset({"zai", "wafer", "fireworks", "inco"})
+DEFAULT_EFFORT = "high"
+EFFORT_MAX_TOKENS_FLOORS = {"medium": 4096, "high": 8192, "max": 16384}
+VALID_EFFORTS = frozenset({"low", "medium", "high", "max", "off"})
+
+
+def _resolve_effort(route: str, overrides: dict[str, str] | None) -> str | None:
+    """Route effort level: config override wins, flash routes default to high."""
+    configured = (overrides or {}).get(route)
+    if configured is not None:
+        return None if configured == "off" else configured
+    return DEFAULT_EFFORT if route in EFFORT_ROUTES else None
+
+
+def _stamp_effort(payload: dict[str, Any], level: str, route: str) -> None:
+    """Apply the per-provider effort translation, minding thinking exclusions.
+
+    Measured behavior: zai and fireworks honor adaptive thinking plus
+    output_config.effort as a monotonic dial (max undocumented on fireworks).
+    Inco hides an inverted control - reasoning.effort=low deterministically
+    suppresses reasoning, but its high also reduces it, so only low maps.
+    Wafer has no dial; thinking=disabled is its only verified switch.
+    """
+    if any(
+        payload.get(field) is not None
+        for field in ("thinking", "reasoning_effort", "reasoning")
+    ):
+        return
+    if route == "inco":
+        if level == "low":
+            payload["reasoning"] = {"effort": "low"}
+        return
+    if route == "wafer":
+        if level == "low":
+            payload["thinking"] = {"type": "disabled"}
+        return
+    payload["thinking"] = {"type": "adaptive"}
+    output_config = payload.get("output_config")
+    if not isinstance(output_config, dict):
+        output_config = {}
+        payload["output_config"] = output_config
+    output_config["effort"] = level
+    floor = EFFORT_MAX_TOKENS_FLOORS.get(level)
+    max_tokens = payload.get("max_tokens")
+    if floor and isinstance(max_tokens, int) and max_tokens < floor:
+        payload["max_tokens"] = floor
+
+
 def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
     """Return ``(route, upstream_model)`` or reject an ambiguous model."""
     bare_model = original_model(model)
@@ -362,6 +410,7 @@ def route_payload(
     favorites: set[str],
     model_modalities: dict[str, frozenset[str]] | None = None,
     fireworks_service_tier: str | None = None,
+    effort_overrides: dict[str, str] | None = None,
 ) -> tuple[str, str, bytes]:
     try:
         payload = json.loads(body)
@@ -379,6 +428,9 @@ def route_payload(
             _repair_zai_tool_schemas(payload)
         if route == "fireworks" and fireworks_service_tier:
             payload["service_tier"] = fireworks_service_tier
+        effort = _resolve_effort(route, effort_overrides)
+        if effort is not None:
+            _stamp_effort(payload, effort, route)
         modalities = (model_modalities or {}).get(upstream_model)
         if modalities is not None and "image" not in modalities:
             vision_hint = _vision_hint(favorites, model_modalities or {})
@@ -442,12 +494,20 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
                 self.router.favorites,
                 self.router.model_modalities,
                 fireworks_service_tier=self.router.fireworks_service_tier,
+                effort_overrides=self.router.effort_overrides,
             )
             if route == "cursor":
                 self._serve_cursor(model, body)
                 self._record_status("cursor", model, None)
                 return
-            recorder = MetricsRecorder(route, model)
+            effort = None
+            if route in EFFORT_ROUTES:
+                try:
+                    routed_payload = json.loads(body)
+                    effort = (routed_payload.get("output_config") or {}).get("effort")
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    effort = None
+            recorder = MetricsRecorder(route, model, effort=effort)
             if route == "openrouter":
                 upstream = self.router.openrouter_upstream
             elif route == "zai":
@@ -768,6 +828,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         cursor_repos: list[str] | None = None,
         cursor_mode: str = "plan",
         fireworks_service_tier: str | None = None,
+        effort_overrides: dict[str, str] | None = None,
     ) -> None:
         if anthropic_auth not in {"max", "api"}:
             raise ValueError("Anthropic authentication must be max or api")
@@ -786,6 +847,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         self.cursor_repos = cursor_repos
         self.cursor_mode = cursor_mode if cursor_mode in {"plan", "agent"} else "plan"
         self.fireworks_service_tier = fireworks_service_tier
+        self.effort_overrides = effort_overrides or {}
         super().__init__(address, HybridRouterHandler)
 
 
@@ -812,6 +874,17 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     fireworks_tier = preferences.get("fireworks_service_tier")
     if fireworks_tier is not None and fireworks_tier not in {"standard", "priority"}:
         raise RuntimeError("invalid fireworks_service_tier preference")
+    effort_overrides = preferences.get("effort_overrides")
+    if effort_overrides is not None and (
+        not isinstance(effort_overrides, dict)
+        or not all(
+            isinstance(k, str) and isinstance(v, str) and v in VALID_EFFORTS
+            for k, v in effort_overrides.items()
+        )
+    ):
+        raise RuntimeError(
+            "invalid effort_overrides preference (routes to low|medium|high|max|off)"
+        )
     # The newly installed router is the first new-version process started by
     # ``clr update``. Refreshing here upgrades installations from older
     # releases without requiring users to rerun setup or select.
@@ -825,6 +898,7 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         cursor_repos=cursor_repos,
         cursor_mode=cursor_mode,
         fireworks_service_tier=fireworks_tier,
+        effort_overrides=effort_overrides,
     )
     try:
         server.serve_forever()
