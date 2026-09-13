@@ -207,6 +207,12 @@ def parser() -> argparse.ArgumentParser:
         "--model", help="filter to models whose id contains this substring"
     )
     metrics.add_argument(
+        "--min-tokens",
+        type=int,
+        default=100,
+        help="decode-rate threshold: count only responses with at least this many output tokens",
+    )
+    metrics.add_argument(
         "--route",
         help="filter to routes containing this substring "
         "(zai, wafer, fireworks, inco, cursor, anthropic)",
@@ -1160,15 +1166,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "metrics":
             if args.histogram:
-                print(format_histogram(args.days, args.model, args.route))
+                print(format_histogram(args.days, args.model, args.route, args.min_tokens))
                 return 0
             if args.json:
                 import json as _json
 
                 records = load_records(args.days, args.model, args.route)
-                print(_json.dumps(summarize_metrics(records), indent=2))
+                print(_json.dumps(summarize_metrics(records, args.min_tokens), indent=2))
             else:
-                print(format_summary(args.days, args.model, args.route))
+                print(format_summary(args.days, args.model, args.route, args.min_tokens))
             return 0
         if args.command == "doctor":
             return command_doctor(as_json=args.json)

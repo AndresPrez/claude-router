@@ -251,7 +251,8 @@ def load_records(
     return records
 
 
-def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize(records: list[dict[str, Any]], min_tokens: int = 100) -> dict[str, Any]:
+    """Aggregate records; decode rates count responses of >= min_tokens."""
     groups: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "requests": 0,
@@ -365,13 +366,15 @@ def format_summary(
     days: int,
     model_filter: str | None = None,
     route_filter: str | None = None,
+    min_tokens: int = 100,
 ) -> str:
     records = load_records(days, model_filter, route_filter)
     if not records:
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
-    summary = summarize(records)
+    summary = summarize(records, min_tokens)
+    scope = "" if min_tokens == 100 else f" (decode >= {min_tokens}-token responses)"
     lines = [
-        f"Router metrics — last {days} day(s) — {summary['totals']['requests']} request(s)",
+        f"Router metrics — last {days} day(s) — {summary['totals']['requests']} request(s){scope}",
         "",
         f"{'route':<11} {'model':<22} {'req':>5} {'err':>4} {'in tok':>10} "
         f"{'out tok':>9} {'cache rd':>10} {'cache wr':>10} {'tok/s':>7} "
@@ -399,6 +402,7 @@ def format_histogram(
     days: int,
     model_filter: str | None = None,
     route_filter: str | None = None,
+    min_tokens: int = 100,
 ) -> str:
     """Render requests per hour as an ASCII histogram segmented by route."""
     records = load_records(days, model_filter, route_filter)
@@ -435,7 +439,7 @@ def format_histogram(
         ttft = record.get("ttft_ms")
         if isinstance(out, int) and isinstance(dur, int) and dur > 0:
             generation = max(dur - (ttft if isinstance(ttft, int) else 0), 100)
-            if out >= 100:
+            if out >= max(min_tokens, 100):
                 bucket["decode"].append(out / generation * 1000)
             if out >= 20:
                 bucket["gen_points"].append((out, generation))
@@ -478,6 +482,8 @@ def format_histogram(
         )[:width]
         tps = f"{median(bucket['tps']):.1f}" if bucket["tps"] else "-"
         decode = f"{median(bucket['decode']):.1f}" if bucket["decode"] else "-"
+        if min_tokens != 100 and not bucket["decode"]:
+            decode = f"<{min_tokens}"
         fit = hour_fit(bucket["gen_points"])
         fit_txt = f"{fit:.1f}" if fit else "-"
         ttft = f"{median(bucket['ttft']) / 1000:.1f}s" if bucket["ttft"] else "-"

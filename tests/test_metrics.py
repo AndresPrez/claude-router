@@ -322,3 +322,35 @@ def test_fit_generation_curve_recovers_slope_and_floor() -> None:
 def test_fit_generation_curve_needs_samples() -> None:
     assert metrics_module.fit_generation_curve([(100, 2000)]) is None
     assert metrics_module.fit_generation_curve([(100, 2000)] * 10) is None  # zero variance
+
+
+def test_min_tokens_threshold_raises_decode_population(tmp_path, monkeypatch) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+    for out in (150, 300, 800):
+        write_record(
+            {
+                "at": "2026-09-12T12:00:00+00:00",
+                "route": "inco",
+                "model": "glm-5.3-flash:fast",
+                "stream": True,
+                "status": 200,
+                "error": None,
+                "duration_ms": 2000 + out * 10,
+                "ttft_ms": 1000,
+                "input_tokens": 1,
+                "output_tokens": out,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+                "tokens_per_sec": None,
+                "decode_tokens_per_sec": None,
+            }
+        )
+
+    row100 = summarize(load_records(days=1), min_tokens=100)["models"][0]
+    row500 = summarize(load_records(days=1), min_tokens=500)["models"][0]
+
+    # at 100 tokens all three count: 1250 tokens over (2.5+4+9)s = 80.65;
+    # at 500 only the 800-token response does: 800 tokens over 9s
+    assert row100["decode_tokens_per_sec"] == round(1250 / 15.5, 2)
+    assert row500["decode_tokens_per_sec"] == round(800 / 9.0, 2)
