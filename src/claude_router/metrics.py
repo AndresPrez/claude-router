@@ -300,7 +300,7 @@ def summarize(records: list[dict[str, Any]], min_tokens: int = 100) -> dict[str,
             # Decode rate only counts responses with a measurable generation
             # phase; tiny responses are chunk-arrival-bound, not decode-bound.
             generation_ms = max(duration - (ttft if isinstance(ttft, int) else 0), 100)
-            if output >= 100:
+            if output >= max(min_tokens, 100):
                 bucket["decode_output_tokens"] += output
                 bucket["generation_seconds"] += generation_ms / 1000
             if output >= 20:
