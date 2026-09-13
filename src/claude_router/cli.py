@@ -210,7 +210,7 @@ def parser() -> argparse.ArgumentParser:
         "--min-tokens",
         type=int,
         default=100,
-        help="decode-rate threshold: count only responses with at least this many output tokens",
+        help="filter every column to responses with at least this many output tokens",
     )
     metrics.add_argument(
         "--route",

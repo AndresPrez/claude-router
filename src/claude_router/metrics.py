@@ -252,7 +252,15 @@ def load_records(
 
 
 def summarize(records: list[dict[str, Any]], min_tokens: int = 100) -> dict[str, Any]:
-    """Aggregate records; decode rates count responses of >= min_tokens."""
+    """Aggregate records; a threshold above 100 filters every column to
+    responses with at least that many output tokens."""
+    if min_tokens > 100:
+        records = [
+            record
+            for record in records
+            if isinstance(record.get("output_tokens"), int)
+            and record["output_tokens"] >= min_tokens
+        ]
     groups: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "requests": 0,
@@ -372,7 +380,7 @@ def format_summary(
     if not records:
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
     summary = summarize(records, min_tokens)
-    scope = "" if min_tokens == 100 else f" (decode >= {min_tokens}-token responses)"
+    scope = "" if min_tokens == 100 else f" — responses with >= {min_tokens} output tokens"
     lines = [
         f"Router metrics — last {days} day(s) — {summary['totals']['requests']} request(s){scope}",
         "",
@@ -406,9 +414,12 @@ def format_histogram(
 ) -> str:
     """Render requests per hour as an ASCII histogram segmented by route."""
     records = load_records(days, model_filter, route_filter)
-    if model_filter:
-        needle = model_filter.casefold()
-        records = [r for r in records if needle in str(r.get("model", "")).casefold()]
+    if min_tokens > 100:
+        records = [
+            r
+            for r in records
+            if isinstance(r.get("output_tokens"), int) and r["output_tokens"] >= min_tokens
+        ]
     if not records:
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
 

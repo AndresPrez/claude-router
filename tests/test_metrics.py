@@ -347,10 +347,16 @@ def test_min_tokens_threshold_raises_decode_population(tmp_path, monkeypatch) ->
             }
         )
 
-    row100 = summarize(load_records(days=1), min_tokens=100)["models"][0]
-    row500 = summarize(load_records(days=1), min_tokens=500)["models"][0]
+    records = load_records(days=1)
+    row100 = summarize(records, min_tokens=100)["models"][0]
+    row500 = summarize(records, min_tokens=500)["models"][0]
+    totals500 = summarize(records, min_tokens=500)["totals"]
 
-    # at 100 tokens all three count: 1250 tokens over (2.5+4+9)s = 80.65;
-    # at 500 only the 800-token response does: 800 tokens over 9s
+    # at 100 all three count: 1250 tokens over (2.5+4+9)s = 80.65
+    assert row100["requests"] == 3
     assert row100["decode_tokens_per_sec"] == round(1250 / 15.5, 2)
+    # at 500 every column reflects only the 800-token response
+    assert row500["requests"] == 1
+    assert totals500["requests"] == 1
+    assert totals500["output_tokens"] == 800
     assert row500["decode_tokens_per_sec"] == round(800 / 9.0, 2)
