@@ -72,6 +72,7 @@ from .openrouter import (
     write_credential,
 )
 from .paths import (
+    preferences_path,
     anthropic_credential_path,
     catalog_path,
     claude_settings_path,
@@ -96,7 +97,7 @@ from .settings import (
     save_preferences,
     set_check_confirmation,
 )
-from .storage import read_json_object
+from .storage import atomic_write_json, read_json_object
 from .uninstall import remove_installed_package
 from .update import update_installed_package
 from .wafer import (
@@ -1012,10 +1013,10 @@ def command_config(
         return 0
     if databricks_base_url is not None:
         _validate_databricks_base_url(databricks_base_url)
-        preferences = load_preferences()
-        preferences["databricks_base_url"] = databricks_base_url
-        save_preferences(preferences)
-        print(f"Databricks base URL saved: {databricks_base_url}")
+        document = load_preferences()
+        document["databricks_base_url"] = databricks_base_url
+        atomic_write_json(preferences_path(), document)
+        print(f"Databricks base URL saved: {databricks_base_url} (restart `clr serve`)")
         return 0
     if key_stdin and (anthropic_auth is not None or anthropic_key_stdin):
         raise ValueError("configure OpenRouter and Anthropic credentials in separate commands")
