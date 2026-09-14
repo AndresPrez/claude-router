@@ -40,6 +40,8 @@ def new_record(route: str, model: str) -> dict[str, Any]:
         "cache_read_tokens": None,
         "cache_creation_tokens": None,
         "tokens_per_sec": None,
+        "decode_tokens_per_sec": None,
+        "effort": None,
     }
 
 
@@ -86,6 +88,34 @@ def _count(value: Any) -> int:
     return value if isinstance(value, int) and value >= 0 else 0
 
 
+def fit_generation_curve(
+    points: list[tuple[int, int]],
+) -> tuple[float, float, float] | None:
+    """Least-squares fit of ``generation_ms = floor + tokens * per_token_ms``.
+
+    The slope isolates true decode speed from the fixed event-pipeline floor
+    (SSE batching, turn finalization) that dominates short responses; the
+    intercept is that floor in milliseconds. Returns ``(floor, slope, r2)``;
+    a low r2 means the pooled data mixes regimes (for example peak and
+    off-peak hours) and the fit should not be trusted.
+    """
+    if len(points) < 10:
+        return None
+    n = float(len(points))
+    mean_x = sum(x for x, _ in points) / n
+    mean_y = sum(y for _, y in points) / n
+    var_x = sum((x - mean_x) ** 2 for x, _ in points)
+    var_y = sum((y - mean_y) ** 2 for _, y in points)
+    if var_x == 0 or var_y == 0:
+        return None
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in points)
+    slope = cov / var_x
+    if slope <= 0:
+        return None
+    r2 = (cov * cov) / (var_x * var_y)
+    return max(mean_y - slope * mean_x, 0.0), slope, r2
+
+
 def parse_json_usage(record: dict[str, Any], raw: bytes) -> None:
     """Update ``record`` from a complete non-stream Anthropic JSON response."""
     try:
@@ -114,8 +144,9 @@ def apply_cursor_usage(record: dict[str, Any], usage: dict[str, Any] | None) -> 
 class MetricsRecorder:
     """Collect one request's metrics and append a record on ``finish``."""
 
-    def __init__(self, route: str, model: str) -> None:
+    def __init__(self, route: str, model: str, effort: str | None = None) -> None:
         self.record = new_record(route, model)
+        self.record["effort"] = effort
         self._started = time.monotonic()
         self._finished = False
 
@@ -148,6 +179,12 @@ class MetricsRecorder:
         output = self.record.get("output_tokens")
         if isinstance(output, int) and output > 0 and duration > 0:
             self.record["tokens_per_sec"] = round(output / duration, 2)
+            ttft = self.record.get("ttft_ms")
+            generation = duration - (ttft / 1000 if isinstance(ttft, int) else 0)
+            # Short responses can arrive inside the first read, leaving no
+            # measurable generation phase; a floor keeps the rate meaningful.
+            if generation >= 0.1 and output >= 100:
+                self.record["decode_tokens_per_sec"] = round(output / generation, 2)
         write_record(self.record)
 
 
@@ -175,9 +212,14 @@ def _rotate_if_needed(path: Path, incoming: int) -> None:
         pass
 
 
-def load_records(days: int, model_filter: str | None = None) -> list[dict[str, Any]]:
+def load_records(
+    days: int,
+    model_filter: str | None = None,
+    route_filter: str | None = None,
+) -> list[dict[str, Any]]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     needle = model_filter.casefold() if model_filter else None
+    route_needle = route_filter.casefold() if route_filter else None
     records: list[dict[str, Any]] = []
     path = metrics_path()
     for candidate in (path.with_suffix(".jsonl.1"), path):
@@ -205,11 +247,22 @@ def load_records(days: int, model_filter: str | None = None) -> list[dict[str, A
                         pass
                 if needle and needle not in str(record.get("model", "")).casefold():
                     continue
+                if route_needle and route_needle not in str(record.get("route", "")).casefold():
+                    continue
                 records.append(record)
     return records
 
 
-def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
+def summarize(records: list[dict[str, Any]], min_tokens: int = 100) -> dict[str, Any]:
+    """Aggregate records; a threshold above 100 filters every column to
+    responses with at least that many output tokens."""
+    if min_tokens > 100:
+        records = [
+            record
+            for record in records
+            if isinstance(record.get("output_tokens"), int)
+            and record["output_tokens"] >= min_tokens
+        ]
     groups: dict[tuple[str, str], dict[str, Any]] = defaultdict(
         lambda: {
             "requests": 0,
@@ -220,6 +273,9 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             "cache_creation_tokens": 0,
             "output_tokens_streamed": 0,
             "stream_seconds": 0.0,
+            "decode_output_tokens": 0,
+            "generation_seconds": 0.0,
+            "gen_points": [],
             "ttft_total_ms": 0,
             "ttft_samples": 0,
         }
@@ -241,6 +297,7 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
                 bucket[field] += value
         output = record.get("output_tokens")
         duration = record.get("duration_ms")
+        ttft = record.get("ttft_ms")
         if (
             record.get("stream")
             and isinstance(output, int)
@@ -250,6 +307,14 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
         ):
             bucket["output_tokens_streamed"] += output
             bucket["stream_seconds"] += duration / 1000
+            # Decode rate only counts responses with a measurable generation
+            # phase; tiny responses are chunk-arrival-bound, not decode-bound.
+            generation_ms = max(duration - (ttft if isinstance(ttft, int) else 0), 100)
+            if output >= max(min_tokens, 100):
+                bucket["decode_output_tokens"] += output
+                bucket["generation_seconds"] += generation_ms / 1000
+            if output >= 20:
+                bucket["gen_points"].append((output, generation_ms))
         ttft = record.get("ttft_ms")
         if isinstance(ttft, int) and ttft >= 0:
             bucket["ttft_total_ms"] += ttft
@@ -270,6 +335,16 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
             if bucket["stream_seconds"] > 0
             else None
         )
+        decode_tps = (
+            bucket["decode_output_tokens"] / bucket["generation_seconds"]
+            if bucket["generation_seconds"] > 0
+            else None
+        )
+        curve = fit_generation_curve(bucket["gen_points"])
+        # Only trust the fit when generation time actually tracks length;
+        # pooled peak/off-peak mixtures produce confident nonsense.
+        fit_tps = 1000.0 / curve[1] if curve and curve[2] >= 0.5 else None
+        floor_ms = round(curve[0]) if curve and curve[2] >= 0.5 else None
         avg_ttft = (
             bucket["ttft_total_ms"] / bucket["ttft_samples"]
             if bucket["ttft_samples"]
@@ -286,6 +361,9 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
                 "cache_read_tokens": bucket["cache_read_tokens"],
                 "cache_creation_tokens": bucket["cache_creation_tokens"],
                 "tokens_per_sec": round(tps, 2) if tps else None,
+                "decode_tokens_per_sec": round(decode_tps, 2) if decode_tps else None,
+                "fit_decode_tokens_per_sec": round(fit_tps, 1) if fit_tps else None,
+                "turn_floor_ms": floor_ms,
                 "avg_ttft_ms": round(avg_ttft) if avg_ttft is not None else None,
             }
         )
@@ -294,23 +372,32 @@ def summarize(records: list[dict[str, Any]]) -> dict[str, Any]:
     return {"models": models, "totals": totals}
 
 
-def format_summary(days: int, model_filter: str | None = None) -> str:
-    records = load_records(days, model_filter)
+def format_summary(
+    days: int,
+    model_filter: str | None = None,
+    route_filter: str | None = None,
+    min_tokens: int = 100,
+) -> str:
+    records = load_records(days, model_filter, route_filter)
     if not records:
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
-    summary = summarize(records)
+    summary = summarize(records, min_tokens)
+    scope = "" if min_tokens == 100 else f" — responses with >= {min_tokens} output tokens"
     lines = [
-        f"Router metrics — last {days} day(s) — {summary['totals']['requests']} request(s)",
+        f"Router metrics — last {days} day(s) — {summary['totals']['requests']} request(s){scope}",
         "",
         f"{'route':<11} {'model':<22} {'req':>5} {'err':>4} {'in tok':>10} "
-        f"{'out tok':>9} {'cache rd':>10} {'cache wr':>10} {'tok/s':>7} {'ttft ms':>8}",
+        f"{'out tok':>9} {'cache rd':>10} {'cache wr':>10} {'tok/s':>7} "
+        f"{'dec t/s':>7} {'fit t/s':>7} {'ttft ms':>8}",
     ]
     for row in summary["models"]:
         lines.append(
             f"{row['route']:<11.11} {row['model']:<22.22} {row['requests']:>5} "
             f"{row['errors']:>4} {row['input_tokens']:>10} {row['output_tokens']:>9} "
             f"{row['cache_read_tokens']:>10} {row['cache_creation_tokens']:>10} "
-            f"{_fmt(row['tokens_per_sec']):>7} {_fmt(row['avg_ttft_ms']):>8}"
+            f"{_fmt(row['tokens_per_sec']):>7} {_fmt(row['decode_tokens_per_sec']):>7} "
+            f"{_fmt(row['fit_decode_tokens_per_sec']):>7} "
+            f"{_fmt(row['avg_ttft_ms']):>8}"
         )
     totals = summary["totals"]
     lines.append(
@@ -321,17 +408,32 @@ def format_summary(days: int, model_filter: str | None = None) -> str:
     return "\n".join(lines)
 
 
-def format_histogram(days: int, model_filter: str | None = None) -> str:
+def format_histogram(
+    days: int,
+    model_filter: str | None = None,
+    route_filter: str | None = None,
+    min_tokens: int = 100,
+) -> str:
     """Render requests per hour as an ASCII histogram segmented by route."""
-    records = load_records(days)
-    if model_filter:
-        needle = model_filter.casefold()
-        records = [r for r in records if needle in str(r.get("model", "")).casefold()]
+    records = load_records(days, model_filter, route_filter)
+    if min_tokens > 100:
+        records = [
+            r
+            for r in records
+            if isinstance(r.get("output_tokens"), int) and r["output_tokens"] >= min_tokens
+        ]
     if not records:
         return f"No recorded requests in the last {days} day(s) at {metrics_path()}."
 
     hours: dict[str, dict[str, Any]] = defaultdict(
-        lambda: {"routes": defaultdict(int), "tps": [], "ttft": [], "errors": 0}
+        lambda: {
+            "routes": defaultdict(int),
+            "tps": [],
+            "decode": [],
+            "gen_points": [],
+            "ttft": [],
+            "errors": 0,
+        }
     )
     for record in records:
         at = record.get("at")
@@ -345,11 +447,33 @@ def format_histogram(days: int, model_filter: str | None = None) -> str:
             bucket["errors"] += 1
         if isinstance(record.get("tokens_per_sec"), (int, float)):
             bucket["tps"].append(record["tokens_per_sec"])
+        out = record.get("output_tokens")
+        dur = record.get("duration_ms")
+        ttft = record.get("ttft_ms")
+        if isinstance(out, int) and isinstance(dur, int) and dur > 0:
+            generation = max(dur - (ttft if isinstance(ttft, int) else 0), 100)
+            if out >= max(min_tokens, 100):
+                bucket["decode"].append(out / generation * 1000)
+            if out >= 20:
+                bucket["gen_points"].append((out, generation))
         if isinstance(record.get("ttft_ms"), int):
             bucket["ttft"].append(record["ttft_ms"])
 
-    characters = {"anthropic": "█", "zai": "▓", "cursor": "░"}
-    width = 48
+    def hour_fit(points: list[tuple[int, int]]) -> float | None:
+        curve = fit_generation_curve(points)
+        return round(1000.0 / curve[1], 1) if curve and curve[2] >= 0.5 else None
+
+    characters = {
+        "anthropic": "█",
+        "zai": "▓",
+        "cursor": "░",
+        "wafer": "▒",
+        "fireworks": "▚",
+        "inco": "▞",
+        "openrouter": "░",
+        "rejected": "·",
+    }
+    width = 26
     busiest = max(
         (sum(bucket["routes"].values()) for bucket in hours.values()), default=0
     )
@@ -359,8 +483,8 @@ def format_histogram(days: int, model_filter: str | None = None) -> str:
     lines = [
         f"Requests per hour — last {days} day(s) — {len(records)} total{scope}",
         "",
-        f"{'hour':<12} {'req':>4} {'err':>4}  {'distribution':<50} "
-        f"{'med tok/s':>9} {'med ttft':>9}",
+        f"{'hour':<12} {'req':>4} {'err':>4} {'distribution':<28} "
+        f"{'tok/s':>7} {'dec t/s':>8} {'fit t/s':>8} {'ttft':>6}",
     ]
     for hour in sorted(hours):
         bucket = hours[hour]
@@ -370,9 +494,15 @@ def format_histogram(days: int, model_filter: str | None = None) -> str:
             for route, count in sorted(bucket["routes"].items())
         )[:width]
         tps = f"{median(bucket['tps']):.1f}" if bucket["tps"] else "-"
+        decode = f"{median(bucket['decode']):.1f}" if bucket["decode"] else "-"
+        if min_tokens != 100 and not bucket["decode"]:
+            decode = f"<{min_tokens}"
+        fit = hour_fit(bucket["gen_points"])
+        fit_txt = f"{fit:.1f}" if fit else "-"
         ttft = f"{median(bucket['ttft']) / 1000:.1f}s" if bucket["ttft"] else "-"
         lines.append(
-            f"{hour:<12} {total:>4} {bucket['errors']:>4}  {bar:<50} {tps:>9} {ttft:>9}"
+            f"{hour:<12} {total:>4} {bucket['errors']:>4} {bar:<28} "
+            f"{tps:>7} {decode:>8} {fit_txt:>8} {ttft:>6}"
         )
     lines.append("")
     lines.append(

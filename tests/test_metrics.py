@@ -1,5 +1,7 @@
 """Tests for router request metrics (metrics.jsonl)."""
 
+import json
+from datetime import datetime, timezone
 
 from claude_router import metrics as metrics_module
 from claude_router.metrics import (
@@ -43,8 +45,12 @@ def test_recorder_computes_speed_and_writes(tmp_path, monkeypatch) -> None:
     metrics_path = tmp_path / "metrics.jsonl"
     monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
 
+    clock = {"now": 0.0}
+    monkeypatch.setattr(metrics_module.time, "monotonic", lambda: clock["now"])
     recorder = MetricsRecorder("zai", "glm-5.3-flash")
+    clock["now"] = 0.5
     recorder.mark_first_byte()
+    clock["now"] = 0.6
     recorder.observe_sse(
         b'event: message_start\ndata: {"type":"message_start","message":{"usage":'
         b'{"input_tokens":100}}}\n\n'
@@ -130,6 +136,37 @@ def test_summarize_aggregates_per_model(tmp_path, monkeypatch) -> None:
     assert row["model"] == "glm-5.3-flash"
     assert row["tokens_per_sec"] == 50.0  # 150 tokens / 3 seconds
     assert row["avg_ttft_ms"] == 500
+
+
+def test_summarize_decodes_only_measurable_streams(tmp_path, monkeypatch) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+    for out, dur, ttft in ((500, 4000, 1000), (10, 3000, 1000)):
+        write_record(
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "route": "inco",
+                "model": "glm-5.3-flash:fast",
+                "stream": True,
+                "status": 200,
+                "error": None,
+                "duration_ms": dur,
+                "ttft_ms": ttft,
+                "input_tokens": 1,
+                "output_tokens": out,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+                "tokens_per_sec": None,
+                "decode_tokens_per_sec": None,
+            }
+        )
+
+    row = summarize(load_records(days=1))["models"][0]
+
+    # only the 500-token request counts: 500 tokens / 3s generation
+    assert row["decode_tokens_per_sec"] == round(500 / 3, 2)
+    # e2e still counts both: 510 tokens / 7s
+    assert row["tokens_per_sec"] == round(510 / 7, 2)
 
 
 def test_format_summary_renders_table(tmp_path, monkeypatch, capsys) -> None:
@@ -227,3 +264,100 @@ def test_format_histogram_renders_scaled_bars(tmp_path, monkeypatch) -> None:
     assert "09-10 1" in out
     assert "▓" in out
     assert "50.0" in out
+    assert "dec t/s" in out
+    assert "fit t/s" in out
+
+
+def test_recorder_computes_decode_rate(tmp_path, monkeypatch) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+    clock = {"now": 0.0}
+    monkeypatch.setattr(metrics_module.time, "monotonic", lambda: clock["now"])
+
+    recorder = MetricsRecorder("inco", "glm-5.3-flash:fast")
+    clock["now"] = 0.5
+    recorder.mark_first_byte()
+    clock["now"] = 3.0
+    recorder.observe_sse(
+        b'event: message_delta\ndata: {"type":"message_delta","usage":'
+        b'{"output_tokens":100}}\n\n'
+    )
+    recorder.finish(200)
+    record = json.loads(metrics_path.read_text().strip())
+
+    assert record["tokens_per_sec"] is not None
+    assert record["decode_tokens_per_sec"] is not None
+    assert record["decode_tokens_per_sec"] >= record["tokens_per_sec"]
+
+
+def test_decode_rate_skips_tiny_responses(tmp_path, monkeypatch) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+
+    clock = {"now": 0.0}
+    monkeypatch.setattr(metrics_module.time, "monotonic", lambda: clock["now"])
+    recorder = MetricsRecorder("zai", "glm-5.3-flash")
+    clock["now"] = 0.5
+    recorder.mark_first_byte()
+    clock["now"] = 0.6
+    recorder.observe_sse(
+        b'event: message_delta\ndata: {"type":"message_delta","usage":'
+        b'{"output_tokens":8}}\n\n'
+    )
+    recorder.finish(200)
+    record = json.loads(metrics_path.read_text().strip())
+
+    assert record["decode_tokens_per_sec"] is None  # too small to measure
+
+
+def test_fit_generation_curve_recovers_slope_and_floor() -> None:
+    # generation_ms = 1500ms floor + 10ms per token -> 100 tok/s, 1500ms floor
+    points = [(tokens, 1500 + 10 * tokens) for tokens in range(20, 200, 7)]
+    floor, slope, r2 = metrics_module.fit_generation_curve(points)
+    assert r2 > 0.99
+
+    assert floor == 1500
+    assert slope == 10
+
+
+def test_fit_generation_curve_needs_samples() -> None:
+    assert metrics_module.fit_generation_curve([(100, 2000)]) is None
+    assert metrics_module.fit_generation_curve([(100, 2000)] * 10) is None  # zero variance
+
+
+def test_min_tokens_threshold_raises_decode_population(tmp_path, monkeypatch) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+    for out in (150, 300, 800):
+        write_record(
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "route": "inco",
+                "model": "glm-5.3-flash:fast",
+                "stream": True,
+                "status": 200,
+                "error": None,
+                "duration_ms": 2000 + out * 10,
+                "ttft_ms": 1000,
+                "input_tokens": 1,
+                "output_tokens": out,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+                "tokens_per_sec": None,
+                "decode_tokens_per_sec": None,
+            }
+        )
+
+    records = load_records(days=1)
+    row100 = summarize(records, min_tokens=100)["models"][0]
+    row500 = summarize(records, min_tokens=500)["models"][0]
+    totals500 = summarize(records, min_tokens=500)["totals"]
+
+    # at 100 all three count: 1250 tokens over (2.5+4+9)s = 80.65
+    assert row100["requests"] == 3
+    assert row100["decode_tokens_per_sec"] == round(1250 / 15.5, 2)
+    # at 500 every column reflects only the 800-token response
+    assert row500["requests"] == 1
+    assert totals500["requests"] == 1
+    assert totals500["output_tokens"] == 800
+    assert row500["decode_tokens_per_sec"] == round(800 / 9.0, 2)

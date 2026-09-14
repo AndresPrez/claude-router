@@ -206,9 +206,34 @@ def parser() -> argparse.ArgumentParser:
     metrics.add_argument(
         "--model", help="filter to models whose id contains this substring"
     )
+    metrics.add_argument(
+        "--min-tokens",
+        type=int,
+        default=100,
+        help="filter every column to responses with at least this many output tokens",
+    )
+    metrics.add_argument(
+        "--route",
+        help="filter to routes containing this substring "
+        "(zai, wafer, fireworks, inco, cursor, anthropic)",
+    )
 
     config = commands.add_parser("config", help="change credentials and CLI preferences")
-    config.add_argument("--key-stdin", action="store_true", help="read the key from stdin")
+    config.add_argument(
+        "--openrouter-key",
+        action="store_true",
+        help="prompt to store an OpenRouter API key",
+    )
+    config.add_argument(
+        "--openrouter-key-stdin",
+        action="store_true",
+        help="read and store an OpenRouter API key from stdin",
+    )
+    config.add_argument(
+        "--key-stdin",
+        action="store_true",
+        help=argparse.SUPPRESS,  # legacy alias for --openrouter-key-stdin
+    )
     config.add_argument("--no-validate", action="store_true", help="skip the key metadata check")
     config.add_argument(
         "--anthropic-auth",
@@ -796,6 +821,8 @@ def command_select(
 def command_config(
     *,
     key_stdin: bool,
+    openrouter_key: bool,
+    openrouter_key_stdin: bool,
     no_validate: bool,
     anthropic_auth: str | None,
     anthropic_key_stdin: bool,
@@ -811,6 +838,7 @@ def command_config(
     inco_key_stdin: bool,
     check_confirmation: str | None,
 ) -> int:
+    key_stdin = key_stdin or openrouter_key or openrouter_key_stdin
     if check_confirmation is not None:
         if (
             key_stdin
@@ -1119,6 +1147,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "config":
             return command_config(
                 key_stdin=args.key_stdin,
+                openrouter_key=args.openrouter_key,
+                openrouter_key_stdin=args.openrouter_key_stdin,
                 no_validate=args.no_validate,
                 anthropic_auth=args.anthropic_auth,
                 anthropic_key_stdin=args.anthropic_key_stdin,
@@ -1136,14 +1166,15 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.command == "metrics":
             if args.histogram:
-                print(format_histogram(args.days, args.model))
+                print(format_histogram(args.days, args.model, args.route, args.min_tokens))
                 return 0
             if args.json:
                 import json as _json
 
-                print(_json.dumps(summarize_metrics(load_records(args.days, args.model)), indent=2))
+                records = load_records(args.days, args.model, args.route)
+                print(_json.dumps(summarize_metrics(records, args.min_tokens), indent=2))
             else:
-                print(format_summary(args.days, args.model))
+                print(format_summary(args.days, args.model, args.route, args.min_tokens))
             return 0
         if args.command == "doctor":
             return command_doctor(as_json=args.json)
