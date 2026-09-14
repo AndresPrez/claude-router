@@ -116,7 +116,7 @@ def test_translate_stream_events_to_anthropic_frames() -> None:
         "content_block_stop", "message_delta", "message_stop",
     ]
     usage_frame = frames[-2]
-    assert '"output_tokens": 2' in usage_frame
+    assert '"output_tokens":2' in usage_frame
 
 
 def test_stream_failures_raise() -> None:
