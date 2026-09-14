@@ -64,6 +64,10 @@ def inco_credential_path() -> Path:
     return config_dir() / "inco-credential"
 
 
+def databricks_credential_path() -> Path:
+    return config_dir() / "databricks-credential"
+
+
 def router_token_path() -> Path:
     return config_dir() / "router-token"
 

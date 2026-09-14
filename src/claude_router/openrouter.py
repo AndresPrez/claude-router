@@ -10,7 +10,14 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any
 
-from .models import CURSOR_MODELS, FIREWORKS_MODELS, INCO_MODELS, WAFER_MODELS, ZAI_MODELS
+from .models import (
+    CURSOR_MODELS,
+    DATABRICKS_MODELS,
+    FIREWORKS_MODELS,
+    INCO_MODELS,
+    WAFER_MODELS,
+    ZAI_MODELS,
+)
 from .paths import catalog_path, credential_path
 from .storage import atomic_write_json, atomic_write_text, read_json_object
 
@@ -156,7 +163,9 @@ def merged_catalog(models: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(model.get("id"), str)
     }
     merged = list(models)
-    for model in [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS, *INCO_MODELS]:
+    static = [*ZAI_MODELS, *CURSOR_MODELS, *WAFER_MODELS, *FIREWORKS_MODELS,
+              *INCO_MODELS, *DATABRICKS_MODELS]
+    for model in static:
         key = (str(model.get("provider", "openrouter")), str(model["id"]))
         if key not in seen:
             seen.add(key)

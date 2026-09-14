@@ -14,6 +14,7 @@ CURSOR_MODEL_PREFIX = "clr/cursor/"
 WAFER_MODEL_PREFIX = "clr/wafer/"
 FIREWORKS_MODEL_PREFIX = "clr/fireworks/"
 INCO_MODEL_PREFIX = "clr/inco/"
+DATABRICKS_MODEL_PREFIX = "clr/databricks/"
 # Claude Code's client-side context-budget marker. Upstreams receive the bare
 # id: Z.ai rejects the suffix with error 1211 (unknown model).
 CONTEXT_BUDGET_SUFFIX = "[1m]"
@@ -251,6 +252,21 @@ INCO_MODELS: list[dict[str, Any]] = [
 ]
 INCO_MODEL_IDS = frozenset(m["id"] for m in INCO_MODELS)
 
+# Static Databricks AI Gateway catalog. Ids are gateway-served system models
+# (dedicated deployment base URL + token, OpenAI Responses dialect).
+DATABRICKS_MODELS: list[dict[str, Any]] = [
+    {
+        "id": "system.ai.glm-5-3-flash",
+        "name": "GLM 5.3 Flash on Databricks",
+        "description": "GLM-5.3-Flash served through a Databricks AI Gateway",
+        "provider": "databricks",
+        "context_length": 1_000_000,
+        "supported_parameters": ["tools", "tool_choice"],
+        "architecture": {"input_modalities": ["text"]},
+    },
+]
+DATABRICKS_MODEL_IDS = frozenset(m["id"] for m in DATABRICKS_MODELS)
+
 # Static Cursor Cloud Agents catalog. Model ids must match GET /v1/models on
 # api.cursor.com. Runs are agent tasks, so these entries honestly advertise
 # no Messages-API tool support.
@@ -307,6 +323,8 @@ def provider_of(model_id: str) -> str:
         return "fireworks"
     if model_id in INCO_MODEL_IDS:
         return "inco"
+    if model_id in DATABRICKS_MODEL_IDS:
+        return "databricks"
     return "openrouter"
 
 
@@ -375,6 +393,7 @@ def namespaced_model(model_id: str) -> str:
         "wafer": WAFER_MODEL_PREFIX,
         "fireworks": FIREWORKS_MODEL_PREFIX,
         "inco": INCO_MODEL_PREFIX,
+        "databricks": DATABRICKS_MODEL_PREFIX,
     }.get(provider, OPENROUTER_MODEL_PREFIX)
     return f"{prefix}{model_id}"
 
@@ -387,6 +406,7 @@ def original_model(model_id: str) -> str | None:
         WAFER_MODEL_PREFIX,
         FIREWORKS_MODEL_PREFIX,
         INCO_MODEL_PREFIX,
+        DATABRICKS_MODEL_PREFIX,
     ):
         if model_id.startswith(prefix):
             original = model_id[len(prefix) :]
@@ -408,6 +428,8 @@ def route_of_namespaced(model_id: str) -> str | None:
         return "fireworks"
     if model_id.startswith(INCO_MODEL_PREFIX):
         return "inco"
+    if model_id.startswith(DATABRICKS_MODEL_PREFIX):
+        return "databricks"
     return None
 
 
@@ -529,6 +551,7 @@ def picker_description(model: dict[str, Any]) -> str:
         "wafer": "Wafer Serverless via claude-router",
         "fireworks": "Fireworks Serverless via claude-router",
         "inco": "Inco AI (DFlash) via claude-router",
+        "databricks": "Databricks AI Gateway via claude-router",
     }.get(provider, "OpenRouter via claude-router")
     parts = [
         str(model.get("id", "")),
@@ -571,6 +594,7 @@ def picker_row(model: dict[str, Any], *, hybrid: bool = False) -> dict[str, str]
         "wafer": " · Wafer",
         "fireworks": " · Fireworks",
         "inco": " · Inco",
+        "databricks": " · Databricks",
     }.get(provider_of(model_id), " · OpenRouter")
     return {
         "model": (

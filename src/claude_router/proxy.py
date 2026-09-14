@@ -24,6 +24,16 @@ from .cursor import (
     read_cursor_credential,
     run_messages,
 )
+from .databricks import (
+    DatabricksBridgeError,
+    read_databricks_credential,
+)
+from .databricks import (
+    error_frame as databricks_error_frame,
+)
+from .databricks import (
+    serve as serve_databricks,
+)
 from .fireworks import FIREWORKS_UPSTREAM, read_fireworks_credential
 from .inco import INCO_UPSTREAM, read_inco_credential
 from .metrics import MetricsRecorder
@@ -319,6 +329,7 @@ def read_router_token() -> str:
 
 
 EFFORT_ROUTES = frozenset({"zai", "wafer", "fireworks", "inco"})
+# databricks maps effort to Responses reasoning at translation time
 DEFAULT_EFFORT = "high"
 EFFORT_MAX_TOKENS_FLOORS = {"medium": 4096, "high": 8192, "max": 16384}
 VALID_EFFORTS = frozenset({"low", "medium", "high", "max", "off"})
@@ -392,6 +403,10 @@ def classify_model(model: str, favorites: set[str]) -> tuple[str, str]:
             if bare_model not in favorites:
                 raise ValueError("Inco model is not in the clr favorites allowlist")
             return "inco", bare_model
+        if route_of_namespaced(model) == "databricks":
+            if bare_model not in favorites:
+                raise ValueError("Databricks model is not in the clr favorites allowlist")
+            return "databricks", bare_model
         if not hybrid_openrouter_allowed(bare_model):
             raise ValueError("Anthropic and automatic models are blocked on the OpenRouter route")
         if bare_model not in favorites:
@@ -419,7 +434,7 @@ def route_payload(
     if not isinstance(payload, dict) or not isinstance(payload.get("model"), str):
         raise ValueError("request body must contain a string model")
     route, upstream_model = classify_model(payload["model"], favorites)
-    if route in {"openrouter", "zai", "cursor", "wafer", "fireworks", "inco"}:
+    if route in {"openrouter", "zai", "cursor", "wafer", "fireworks", "inco", "databricks"}:
         payload["model"] = upstream_model
         if route == "openrouter" and upstream_model.casefold().startswith(GEMINI_MODEL_PREFIX):
             _repair_gemini_tool_schemas(payload)
@@ -499,6 +514,10 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             if route == "cursor":
                 self._serve_cursor(model, body)
                 self._record_status("cursor", model, None)
+                return
+            if route == "databricks":
+                self._serve_databricks(model, body)
+                self._record_status("databricks", model, None)
                 return
             effort = None
             if route in EFFORT_ROUTES:
@@ -762,6 +781,50 @@ class HybridRouterHandler(BaseHTTPRequestHandler):
             )
         recorder.finish(200 if error is None else 499, error=error, usage=usage)
 
+    def _serve_databricks(self, model: str, body: bytes) -> None:
+        """Translate to the Responses API and serve the exchange locally."""
+        try:
+            payload = json.loads(body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("request body must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be a JSON object")
+        base_url = self.router.databricks_base_url
+        if not base_url:
+            raise DatabricksBridgeError(
+                "databricks_base_url is not configured; set it in "
+                "~/.config/claude-router/config.json"
+            )
+        credential = read_databricks_credential()
+        level = self.router.effort_overrides.get("databricks") or DEFAULT_EFFORT
+        effort = None if level in ("off",) else ({"max": "high"}.get(level, level))
+        recorder = MetricsRecorder("databricks", model, effort=effort)
+        result = serve_databricks(payload, base_url, credential, effort)
+        if isinstance(result, dict):
+            recorder.observe_json(json.dumps(result).encode())
+            recorder.finish(200)
+            self._json_response(200, result)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        try:
+            for frame in result:
+                recorder.mark_first_byte()
+                recorder.observe_sse(frame)
+                self._write_chunk(frame)
+        except (BrokenPipeError, ConnectionResetError):
+            recorder.finish(499, error="client disconnected")
+            return
+        except DatabricksBridgeError as exc:
+            recorder.finish(502, error=str(exc))
+            self._write_chunk(databricks_error_frame(str(exc)))
+        self.wfile.write(b"0\r\n\r\n")
+        self.wfile.flush()
+        recorder.finish(200)
+
     def _record_status(self, route: str, model: str, error: str | None) -> None:
         if not self.router.record_status:
             return
@@ -829,6 +892,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         cursor_mode: str = "plan",
         fireworks_service_tier: str | None = None,
         effort_overrides: dict[str, str] | None = None,
+        databricks_base_url: str | None = None,
     ) -> None:
         if anthropic_auth not in {"max", "api"}:
             raise ValueError("Anthropic authentication must be max or api")
@@ -848,6 +912,7 @@ class HybridRouterServer(ThreadingHTTPServer):
         self.cursor_mode = cursor_mode if cursor_mode in {"plan", "agent"} else "plan"
         self.fireworks_service_tier = fireworks_service_tier
         self.effort_overrides = effort_overrides or {}
+        self.databricks_base_url = databricks_base_url
         super().__init__(address, HybridRouterHandler)
 
 
@@ -874,6 +939,9 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
     fireworks_tier = preferences.get("fireworks_service_tier")
     if fireworks_tier is not None and fireworks_tier not in {"standard", "priority"}:
         raise RuntimeError("invalid fireworks_service_tier preference")
+    databricks_base_url = preferences.get("databricks_base_url")
+    if databricks_base_url is not None and not isinstance(databricks_base_url, str):
+        raise RuntimeError("invalid databricks_base_url preference")
     effort_overrides = preferences.get("effort_overrides")
     if effort_overrides is not None and (
         not isinstance(effort_overrides, dict)
@@ -899,6 +967,7 @@ def run_router(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
         cursor_mode=cursor_mode,
         fireworks_service_tier=fireworks_tier,
         effort_overrides=effort_overrides,
+        databricks_base_url=databricks_base_url,
     )
     try:
         server.serve_forever()

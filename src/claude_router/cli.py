@@ -35,6 +35,12 @@ from .cursor import (
 from .cursor import (
     validate_cursor_key_shape as _validate_cursor_key_shape,
 )
+from .databricks import (
+    read_databricks_credential,
+    validate_databricks_key_shape,
+    write_databricks_credential,
+)
+from .databricks import validate_base_url as _validate_databricks_base_url
 from .fireworks import (
     read_fireworks_credential,
     write_fireworks_credential,
@@ -71,6 +77,7 @@ from .paths import (
     claude_settings_path,
     credential_path,
     cursor_credential_path,
+    databricks_credential_path,
     fireworks_credential_path,
     inco_credential_path,
     wafer_credential_path,
@@ -86,6 +93,7 @@ from .settings import (
     load_preferences,
     refresh_claude_credential,
     reset_integration,
+    save_preferences,
     set_check_confirmation,
 )
 from .storage import read_json_object
@@ -296,6 +304,21 @@ def parser() -> argparse.ArgumentParser:
         help="read and store an Inco AI API key from stdin",
     )
     config.add_argument(
+        "--databricks-key",
+        action="store_true",
+        help="prompt to store a Databricks AI Gateway token",
+    )
+    config.add_argument(
+        "--databricks-key-stdin",
+        action="store_true",
+        help="read and store a Databricks AI Gateway token from stdin",
+    )
+    config.add_argument(
+        "--databricks-base-url",
+        metavar="URL",
+        help="set the dedicated AI Gateway base URL (https://...)",
+    )
+    config.add_argument(
         "--check-confirmation",
         choices=("ask", "never"),
         help="ask before billable model checks, or never ask",
@@ -493,6 +516,21 @@ def _read_inco_key(*, from_stdin: bool) -> str:
             return existing
         key = _masked_input("Inco AI API key: ").strip()
     validate_inco_key_shape(key)
+    return key
+
+
+def _read_databricks_key(*, from_stdin: bool) -> str:
+    if from_stdin:
+        key = sys.stdin.readline().strip()
+    else:
+        try:
+            existing = read_databricks_credential()
+        except RuntimeError:
+            existing = None
+        if existing and _confirm_key_reuse(databricks_credential_path(), "Databricks token"):
+            return existing
+        key = _masked_input("Databricks token: ").strip()
+    validate_databricks_key_shape(key)
     return key
 
 
@@ -836,6 +874,9 @@ def command_config(
     fireworks_key_stdin: bool,
     inco_key: bool,
     inco_key_stdin: bool,
+    databricks_key: bool,
+    databricks_key_stdin: bool,
+    databricks_base_url: str | None,
     check_confirmation: str | None,
 ) -> int:
     key_stdin = key_stdin or openrouter_key or openrouter_key_stdin
@@ -944,6 +985,37 @@ def command_config(
         write_inco_credential(_read_inco_key(from_stdin=inco_key_stdin))
         assert_private_files()
         print(f"Inco credential updated: {inco_credential_path()} (mode 0600)")
+        return 0
+    if databricks_key or databricks_key_stdin:
+        if (
+            key_stdin
+            or no_validate
+            or anthropic_auth is not None
+            or anthropic_key_stdin
+            or zai_key
+            or zai_key_stdin
+            or cursor_key
+            or cursor_key_stdin
+            or wafer_key
+            or wafer_key_stdin
+            or fireworks_key
+            or fireworks_key_stdin
+            or inco_key
+            or inco_key_stdin
+        ):
+            raise ValueError("configure Databricks separately from other credentials")
+        if databricks_key and databricks_key_stdin:
+            raise ValueError("use --databricks-key or --databricks-key-stdin, not both")
+        write_databricks_credential(_read_databricks_key(from_stdin=databricks_key_stdin))
+        assert_private_files()
+        print(f"Databricks credential updated: {databricks_credential_path()} (mode 0600)")
+        return 0
+    if databricks_base_url is not None:
+        _validate_databricks_base_url(databricks_base_url)
+        preferences = load_preferences()
+        preferences["databricks_base_url"] = databricks_base_url
+        save_preferences(preferences)
+        print(f"Databricks base URL saved: {databricks_base_url}")
         return 0
     if key_stdin and (anthropic_auth is not None or anthropic_key_stdin):
         raise ValueError("configure OpenRouter and Anthropic credentials in separate commands")
@@ -1162,6 +1234,9 @@ def main(argv: list[str] | None = None) -> int:
                 fireworks_key_stdin=args.fireworks_key_stdin,
                 inco_key=args.inco_key,
                 inco_key_stdin=args.inco_key_stdin,
+                databricks_key=args.databricks_key,
+                databricks_key_stdin=args.databricks_key_stdin,
+                databricks_base_url=args.databricks_base_url,
                 check_confirmation=args.check_confirmation,
             )
         if args.command == "metrics":
