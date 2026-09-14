@@ -276,6 +276,7 @@ def summarize(records: list[dict[str, Any]], min_tokens: int = 100) -> dict[str,
             "decode_output_tokens": 0,
             "generation_seconds": 0.0,
             "gen_points": [],
+            "tiny_gen": [],
             "ttft_total_ms": 0,
             "ttft_samples": 0,
         }
@@ -315,6 +316,8 @@ def summarize(records: list[dict[str, Any]], min_tokens: int = 100) -> dict[str,
                 bucket["generation_seconds"] += generation_ms / 1000
             if output >= 20:
                 bucket["gen_points"].append((output, generation_ms))
+            if 1 <= output <= 19 and generation_ms >= 50:
+                bucket["tiny_gen"].append(generation_ms)
         ttft = record.get("ttft_ms")
         if isinstance(ttft, int) and ttft >= 0:
             bucket["ttft_total_ms"] += ttft
@@ -340,11 +343,12 @@ def summarize(records: list[dict[str, Any]], min_tokens: int = 100) -> dict[str,
             if bucket["generation_seconds"] > 0
             else None
         )
+        floor_ms = round(median(bucket["tiny_gen"])) if bucket["tiny_gen"] else None
         curve = fit_generation_curve(bucket["gen_points"])
         # Only trust the fit when generation time actually tracks length;
         # pooled peak/off-peak mixtures produce confident nonsense.
         fit_tps = 1000.0 / curve[1] if curve and curve[2] >= 0.5 else None
-        floor_ms = round(curve[0]) if curve and curve[2] >= 0.5 else None
+        fit_floor = round(curve[0]) if curve and curve[2] >= 0.5 else None
         avg_ttft = (
             bucket["ttft_total_ms"] / bucket["ttft_samples"]
             if bucket["ttft_samples"]
@@ -363,7 +367,8 @@ def summarize(records: list[dict[str, Any]], min_tokens: int = 100) -> dict[str,
                 "tokens_per_sec": round(tps, 2) if tps else None,
                 "decode_tokens_per_sec": round(decode_tps, 2) if decode_tps else None,
                 "fit_decode_tokens_per_sec": round(fit_tps, 1) if fit_tps else None,
-                "turn_floor_ms": floor_ms,
+                "fit_floor_ms": fit_floor,
+                "floor_ms": floor_ms,
                 "avg_ttft_ms": round(avg_ttft) if avg_ttft is not None else None,
             }
         )
@@ -388,7 +393,7 @@ def format_summary(
         "",
         f"{'route':<11} {'model':<22} {'req':>5} {'err':>4} {'in tok':>10} "
         f"{'out tok':>9} {'cache rd':>10} {'cache wr':>10} {'tok/s':>7} "
-        f"{'dec t/s':>7} {'fit t/s':>7} {'ttft ms':>8}",
+        f"{'dec t/s':>7} {'fit t/s':>7} {'floor':>7} {'ttft ms':>8}",
     ]
     for row in summary["models"]:
         lines.append(
@@ -397,6 +402,7 @@ def format_summary(
             f"{row['cache_read_tokens']:>10} {row['cache_creation_tokens']:>10} "
             f"{_fmt(row['tokens_per_sec']):>7} {_fmt(row['decode_tokens_per_sec']):>7} "
             f"{_fmt(row['fit_decode_tokens_per_sec']):>7} "
+            f"{_fmt(row['floor_ms'] / 1000 if row['floor_ms'] else None):>6}s "
             f"{_fmt(row['avg_ttft_ms']):>8}"
         )
     totals = summary["totals"]
@@ -431,6 +437,7 @@ def format_histogram(
             "tps": [],
             "decode": [],
             "gen_points": [],
+            "tiny_gen": [],
             "ttft": [],
             "errors": 0,
         }

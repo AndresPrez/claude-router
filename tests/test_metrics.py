@@ -361,3 +361,33 @@ def test_min_tokens_threshold_raises_decode_population(tmp_path, monkeypatch) ->
     assert totals500["requests"] == 1
     assert totals500["output_tokens"] == 800
     assert row500["decode_tokens_per_sec"] == round(800 / 9.0, 2)
+
+
+def test_floor_from_tiny_turns(tmp_path, monkeypatch) -> None:
+    metrics_path = tmp_path / "metrics.jsonl"
+    monkeypatch.setattr(metrics_module, "metrics_path", lambda: metrics_path)
+    for out, dur, ttft in ((5, 3200, 800), (12, 3500, 900), (8, 3400, 850), (600, 9000, 1000)):
+        write_record(
+            {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "route": "inco",
+                "model": "glm-5.3-flash:fast",
+                "stream": True,
+                "status": 200,
+                "error": None,
+                "duration_ms": dur,
+                "ttft_ms": ttft,
+                "input_tokens": 1,
+                "output_tokens": out,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+                "tokens_per_sec": None,
+                "decode_tokens_per_sec": None,
+                "effort": None,
+            }
+        )
+
+    row = summarize(load_records(days=1))["models"][0]
+
+    # tiny turns (5, 12, 8) give generation 2400, 2600, 2550 -> median 2550
+    assert row["floor_ms"] == 2550
