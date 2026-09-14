@@ -157,7 +157,9 @@ def _sse_frame(event: str, data: dict[str, Any]) -> bytes:
 
 
 def error_frame(message: str) -> bytes:
-    return _sse_frame("error", {"type": "error", "error": {"type": "api_error", "message": message}})
+    return _sse_frame(
+        "error", {"type": "error", "error": {"type": "api_error", "message": message}}
+    )
 
 
 def translate_response(document: dict[str, Any], model: str) -> dict[str, Any]:
@@ -245,9 +247,11 @@ def translate_stream_events(
         kind = event.get("type", "")
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else event
         if kind.startswith("response.created"):
-            yield ensure_started()
+            if frame := ensure_started():
+                yield frame
         elif kind == "response.output_item.added":
-            yield ensure_started()
+            if frame := ensure_started():
+                yield frame
             item = payload.get("item") or {}
             if item.get("type") == "message":
                 open_block += 1
